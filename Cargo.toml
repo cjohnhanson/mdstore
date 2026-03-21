@@ -1,0 +1,12 @@
+[package]
+name = "mdstore"
+version = "0.1.0"
+edition = "2024"
+description = "Generic frontmattered markdown document store"
+
+[dependencies]
+miette = { version = "7", features = ["fancy"] }
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0"
+thiserror = "2"
+rand = "0.10.0"
