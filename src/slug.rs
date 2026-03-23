@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn unicode_normalized_to_ascii() {
-        assert_eq!(slugify("Über die Grenze"), "-ber-die-grenze");
+        assert_eq!(slugify("Über die Grenze"), "ber-die-grenze");
         assert_eq!(slugify("naïve résumé"), "na-ve-r-sum");
         assert_eq!(slugify("café"), "caf");
         assert_eq!(slugify("日本語テスト"), "");
