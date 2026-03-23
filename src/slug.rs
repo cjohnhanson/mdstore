@@ -44,7 +44,7 @@ pub fn extract_prefix(id: &str) -> Option<(&str, &str)> {
 pub fn slugify(title: &str) -> String {
     let mut slug = String::with_capacity(title.len());
     for c in title.chars() {
-        if c.is_alphanumeric() {
+        if c.is_ascii_alphanumeric() {
             slug.push(c.to_ascii_lowercase());
         } else if !slug.ends_with('-') {
             slug.push('-');
@@ -82,6 +82,15 @@ mod tests {
     #[test]
     fn already_slugged() {
         assert_eq!(slugify("already-a-slug"), "already-a-slug");
+    }
+
+    #[test]
+    fn unicode_normalized_to_ascii() {
+        assert_eq!(slugify("Über die Grenze"), "-ber-die-grenze");
+        assert_eq!(slugify("naïve résumé"), "na-ve-r-sum");
+        assert_eq!(slugify("café"), "caf");
+        assert_eq!(slugify("日本語テスト"), "");
+        assert_eq!(slugify("mix of ASCII and 日本語"), "mix-of-ascii-and");
     }
 
     // -- Short ID prefix tests --
