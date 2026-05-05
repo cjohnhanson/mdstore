@@ -3,9 +3,15 @@ name = "mdstore"
 version = "0.2.0"
 edition = "2024"
 description = "Generic frontmattered markdown document store"
+license = "MIT"
+repository = "https://github.com/cjohnhanson/mdstore"
+homepage = "https://github.com/cjohnhanson/mdstore"
+readme = "README.md"
+authors = ["Cody Hanson"]
+keywords = ["markdown", "frontmatter", "yaml", "document-store"]
+categories = ["parser-implementations", "text-processing"]
 
 [dependencies]
-miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0"
 thiserror = "2"
