@@ -6,11 +6,10 @@ and [zettel](https://github.com/cjohnhanson/zettel). Use it when you
 want to store structured data as markdown files in git instead of
 hand-rolling frontmatter parsing.
 
-`Document<T>` holds typed frontmatter (any `Serialize + Deserialize`)
+`Document<T>` holds typed frontmatter (any `Serialize + DeserializeOwned`)
 and a string body. `parse` extracts the YAML between `---` fences;
 `serialize` reconstructs canonical format. Also includes slug
-generation, prefix handling, and a `Selector` type for document
-selection.
+generation and prefix-handling utilities.
 
 ## Install
 
