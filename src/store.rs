@@ -1,0 +1,1157 @@
+//! Store composition: named document stores that declare other stores
+//! they may link into.
+//!
+//! A store declares its dependencies under local aliases. A reference is
+//! either bare (local to the store holding the referring document) or
+//! alias-qualified. Direction lives entirely in the declarations: a store
+//! that never declares another can never link to it, so a shared repo
+//! store cannot reference a private user store.
+//!
+//! This module stays vocabulary-free. It parses references, loads
+//! declarations, computes the dependency closure, and guards the file
+//! scan. The consumer resolves a reference to a document, because only
+//! the consumer knows what an ID means.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+
+/// The config format this build understands. A store declaring a higher
+/// format is rejected rather than silently misread.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// The file both tools read for store declarations. One map per repo, so
+/// two tools in one repo cannot drift into separate alias graphs.
+pub const STORES_FILE: &str = "stores.yml";
+
+// -- References --
+
+/// A reference to a document, possibly in another store.
+///
+/// `alias` is empty for a local reference. More than one element is the
+/// read-only path form (`project/shared-kb:b7c1`) that commands print for
+/// a document reached through a dependency's own dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StoreRef {
+    pub alias: Vec<String>,
+    pub id: String,
+}
+
+impl StoreRef {
+    /// A reference local to the store holding the referring document.
+    pub fn local(id: impl Into<String>) -> Self {
+        StoreRef {
+            alias: Vec::new(),
+            id: id.into(),
+        }
+    }
+
+    /// Parse a reference against the set of aliases the referring store
+    /// declares.
+    ///
+    /// The discrimination rule: text before the first colon is an alias
+    /// only when it is declared. Everything else is an opaque ID, so a
+    /// DOI (`10.1145/12345`), a legacy `depends_on` entry (`x: y`), and
+    /// any other colon-bearing string keep their current meaning.
+    pub fn parse(s: &str, declared: &dyn AliasSet) -> Self {
+        let Some((head, rest)) = s.split_once(':') else {
+            return StoreRef::local(s);
+        };
+        // Path form: every segment must be a plausible alias, and only
+        // the first is checked against the declaring store. The
+        // traversal resolves the other segments store by store.
+        let segments: Vec<&str> = head.split('/').collect();
+        if segments.iter().all(|seg| is_alias_shaped(seg))
+            && !rest.is_empty()
+            && declared.declares(segments[0])
+        {
+            return StoreRef {
+                alias: segments.iter().map(|s| s.to_string()).collect(),
+                id: rest.to_string(),
+            };
+        }
+        StoreRef::local(s)
+    }
+
+    /// True when the reference points outside the referring store.
+    pub fn is_foreign(&self) -> bool {
+        !self.alias.is_empty()
+    }
+}
+
+impl fmt::Display for StoreRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.alias.is_empty() {
+            write!(f, "{}:", self.alias.join("/"))?;
+        }
+        f.write_str(&self.id)
+    }
+}
+
+/// An alias must look like an alias for the discrimination rule to fire.
+/// This keeps `10.1145/12345` and `x: y` opaque even if someone declares
+/// an alias with an unusual name.
+fn is_alias_shaped(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// The aliases a store declares. Implemented by [`StoresConfig`], and by
+/// consumers that keep their own table.
+pub trait AliasSet {
+    fn declares(&self, alias: &str) -> bool;
+}
+
+/// No aliases: every reference parses as local.
+pub struct NoAliases;
+
+impl AliasSet for NoAliases {
+    fn declares(&self, _alias: &str) -> bool {
+        false
+    }
+}
+
+impl AliasSet for Vec<String> {
+    fn declares(&self, alias: &str) -> bool {
+        self.iter().any(|a| a == alias)
+    }
+}
+
+// -- Declarations --
+
+/// Where a store's documents come from.
+///
+/// Written flat in `stores.yml`, so a declaration reads as one line plus
+/// optional keys: `path: ../project`, or `git: <url>` with `rev: <rev>`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "SourceFields", into = "SourceFields")]
+pub enum StoreSource {
+    /// A directory on this machine.
+    Path(PathBuf),
+    /// A git repository. Read-only, fetched into a bare cache.
+    Git { url: String, rev: Option<String> },
+}
+
+/// The on-disk shape of a source declaration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SourceFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    git: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rev: Option<String>,
+}
+
+impl TryFrom<SourceFields> for StoreSource {
+    type Error = String;
+
+    fn try_from(f: SourceFields) -> std::result::Result<Self, String> {
+        match (f.path, f.git) {
+            (Some(_), Some(_)) => {
+                Err("a store declares either 'path' or 'git', not both".into())
+            }
+            (Some(p), None) => {
+                if f.rev.is_some() {
+                    return Err("'rev' applies to a git source, not a path".into());
+                }
+                Ok(StoreSource::Path(p))
+            }
+            (None, Some(url)) => Ok(StoreSource::Git { url, rev: f.rev }),
+            (None, None) => Err("a store needs a 'path' or a 'git' source".into()),
+        }
+    }
+}
+
+impl From<StoreSource> for SourceFields {
+    fn from(s: StoreSource) -> Self {
+        match s {
+            StoreSource::Path(p) => SourceFields {
+                path: Some(p),
+                git: None,
+                rev: None,
+            },
+            StoreSource::Git { url, rev } => SourceFields {
+                path: None,
+                git: Some(url),
+                rev,
+            },
+        }
+    }
+}
+
+impl StoreSource {
+    /// The identity of the store this source points at.
+    ///
+    /// Identity is the source itself, never a self-declared name: a name
+    /// in a dependency's own config is unverifiable, and every store
+    /// written before this feature has none. A path whose repository has
+    /// an origin remote takes that remote's identity, so the same store
+    /// reached by path here and by URL there is one closure member, not
+    /// two.
+    ///
+    /// `located` is where the source resolved on this machine. A path
+    /// identity must come from the resolved location, never the declared
+    /// text. `../b` in two different stores names two different
+    /// directories. `../a` in a dependency names the root store itself,
+    /// which is how a mutual cycle closes.
+    pub fn identity(&self, located: Option<&Path>, origin_of: &dyn OriginLookup) -> StoreId {
+        if let StoreSource::Git { url, .. } = self {
+            return StoreId(canonical_url(url));
+        }
+        let Some(dir) = located else {
+            // Unresolvable: fall back to the declared text so repeated
+            // declarations of the same missing path stay one member.
+            let StoreSource::Path(p) = self else {
+                unreachable!("git handled above")
+            };
+            return StoreId(format!("unresolved:{}", p.display()));
+        };
+        if let Some(url) = origin_of.origin_url(dir) {
+            return StoreId(canonical_url(&url));
+        }
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        StoreId(format!("path:{}", canonical.display()))
+    }
+}
+
+/// Looks up the origin remote of a checkout, so a path source and a git
+/// source for one repository share an identity. The consumer implements
+/// it. [`NoOrigins`] disables the lookup.
+pub trait OriginLookup {
+    fn origin_url(&self, path: &Path) -> Option<String>;
+}
+
+/// Every path keeps a path identity.
+pub struct NoOrigins;
+
+impl OriginLookup for NoOrigins {
+    fn origin_url(&self, _path: &Path) -> Option<String> {
+        None
+    }
+}
+
+/// Normalize a remote URL so the same repository written different ways
+/// compares equal.
+fn canonical_url(url: &str) -> String {
+    let u = url.trim().trim_end_matches('/');
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    // git@host:path and https://host/path name the same repository.
+    let stripped = match u.split_once("://") {
+        Some((_, rest)) => rest.to_string(),
+        None => match u.split_once('@') {
+            Some((_, rest)) => rest.replacen(':', "/", 1),
+            None => u.to_string(),
+        },
+    };
+    stripped.to_ascii_lowercase()
+}
+
+/// The canonical identity of a store.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StoreId(pub String);
+
+impl fmt::Display for StoreId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One store's declarations, read from `stores.yml`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct StoresConfig {
+    /// The config format. Absent means 1 (pre-composition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+    /// Optional display name. Never an identity: see [`StoreSource::identity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// True when other people clone this store.
+    ///
+    /// A shared store's dependencies must be reachable for everyone who
+    /// clones it, so [`StoresConfig::unshareable`] applies. A private
+    /// store can declare local paths freely. A personal knowledge base
+    /// stays on one machine, and local paths are the reason to have one.
+    /// The config declares this state. Zettel does not calculate it,
+    /// because a private store and a shared store are both git
+    /// repositories.
+    #[serde(default)]
+    pub shared: bool,
+    /// Dependencies by local alias, in declaration order.
+    #[serde(default)]
+    pub stores: Vec<StoreDecl>,
+}
+
+/// One dependency declaration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoreDecl {
+    pub alias: String,
+    #[serde(flatten)]
+    pub source: StoreSource,
+}
+
+impl AliasSet for StoresConfig {
+    fn declares(&self, alias: &str) -> bool {
+        self.stores.iter().any(|d| d.alias == alias)
+    }
+}
+
+impl StoresConfig {
+    /// Load `stores.yml` from a store root. A missing file is an empty
+    /// config, so every repo written before this feature keeps working.
+    pub fn load(root: &Path) -> Result<Self> {
+        let path = root.join(STORES_FILE);
+        if !path.exists() {
+            return Ok(StoresConfig::default());
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let config: StoresConfig = serde_yml::from_str(&text)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if let Some(format) = self.format
+            && format > FORMAT_VERSION
+        {
+            return Err(Error::UnsupportedFormat {
+                found: format,
+                supported: FORMAT_VERSION,
+            });
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for decl in &self.stores {
+            if !is_alias_shaped(&decl.alias) {
+                return Err(Error::InvalidStore(format!(
+                    "alias '{}' must be alphanumeric with - or _",
+                    decl.alias
+                )));
+            }
+            if seen.contains(&decl.alias.as_str()) {
+                return Err(Error::InvalidStore(format!(
+                    "alias '{}' is declared twice",
+                    decl.alias
+                )));
+            }
+            seen.push(&decl.alias);
+        }
+        Ok(())
+    }
+
+    /// The source declared under an alias.
+    pub fn source(&self, alias: &str) -> Option<&StoreSource> {
+        self.stores
+            .iter()
+            .find(|d| d.alias == alias)
+            .map(|d| &d.source)
+    }
+
+    /// The declared aliases, in order.
+    pub fn aliases(&self) -> Vec<String> {
+        self.stores.iter().map(|d| d.alias.clone()).collect()
+    }
+
+    /// Dependencies a shared (git-tracked) store may not declare.
+    ///
+    /// A shared store's link targets must be reachable for everyone who
+    /// clones it. A path leaving the repository is reachable only on the
+    /// declaring machine, so it is rejected at resolution rather than
+    /// warned about: an absolute or home-anchored path resolves to a
+    /// *different* directory for every other user, which is worse than
+    /// not resolving.
+    pub fn unshareable(&self, repo_root: &Path) -> Vec<(String, String)> {
+        let mut bad = Vec::new();
+        if !self.shared {
+            return bad;
+        }
+        for decl in &self.stores {
+            let StoreSource::Path(p) = &decl.source else {
+                continue;
+            };
+            let reason = if p.is_absolute() {
+                Some("absolute path".to_string())
+            } else if p.starts_with("~") {
+                Some("home-anchored path".to_string())
+            } else if escapes_root(p) {
+                Some("path leaves the repository".to_string())
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                bad.push((
+                    decl.alias.clone(),
+                    format!(
+                        "{reason} — a shared store must declare an outside \
+                         dependency by git URL so every clone can reach it \
+                         (repo root: {})",
+                        repo_root.display()
+                    ),
+                ));
+            }
+        }
+        bad
+    }
+}
+
+/// True when a relative path climbs out of its base.
+fn escapes_root(p: &Path) -> bool {
+    let mut depth: i32 = 0;
+    for c in p.components() {
+        match c {
+            Component::ParentDir => depth -= 1,
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+        if depth < 0 {
+            return true;
+        }
+    }
+    false
+}
+
+// -- The dependency graph --
+
+/// One member of a dependency closure.
+#[derive(Debug, Clone)]
+pub struct Member {
+    pub id: StoreId,
+    /// How this member is named from the root: empty for the root store,
+    /// `["project"]` for a direct dependency, `["project", "shared-kb"]`
+    /// for one reached through it.
+    pub alias_path: Vec<String>,
+    pub source: StoreSource,
+    /// The resolved location, when the source could be located.
+    pub root: Option<PathBuf>,
+    /// Why the member could not be loaded, if it could not.
+    pub unavailable: Option<String>,
+}
+
+impl Member {
+    /// How a document in this member prints from the root's vantage.
+    pub fn qualify(&self, id: &str) -> String {
+        if self.alias_path.is_empty() {
+            id.to_string()
+        } else {
+            format!("{}:{}", self.alias_path.join("/"), id)
+        }
+    }
+}
+
+/// Locates a declared source on this machine. Consumers implement it so
+/// that git fetching and machine-local overrides stay out of this module.
+pub trait SourceLocator {
+    /// The directory holding a source's documents, or why it is absent.
+    fn locate(&self, source: &StoreSource, declaring_root: &Path) -> std::result::Result<PathBuf, String>;
+    /// The origin remote of a checkout, for identity.
+    fn origin_url(&self, _path: &Path) -> Option<String> {
+        None
+    }
+}
+
+impl<T: SourceLocator> OriginLookup for T {
+    fn origin_url(&self, path: &Path) -> Option<String> {
+        SourceLocator::origin_url(self, path)
+    }
+}
+
+/// Resolves declared sources to local directories with no fetching and
+/// no overrides: paths resolve relative to the declaring store.
+pub struct LocalPaths;
+
+impl SourceLocator for LocalPaths {
+    fn locate(&self, source: &StoreSource, declaring_root: &Path) -> std::result::Result<PathBuf, String> {
+        match source {
+            StoreSource::Path(p) => {
+                let joined = if p.is_absolute() {
+                    p.clone()
+                } else {
+                    declaring_root.join(p)
+                };
+                if joined.is_dir() {
+                    Ok(joined)
+                } else {
+                    Err(format!("no directory at {}", joined.display()))
+                }
+            }
+            StoreSource::Git { url, .. } => {
+                Err(format!("git source {url} needs a locator that fetches"))
+            }
+        }
+    }
+}
+
+/// The dependency closure of a root store.
+///
+/// Members are deduplicated by identity and ordered breadth-first in
+/// declaration order, so output is stable. Cycles terminate: a store
+/// already in the closure is not walked twice, which makes mutual
+/// declarations between two shareable stores legal.
+#[derive(Debug)]
+pub struct StoreGraph {
+    pub members: Vec<Member>,
+    /// Alias tables by member index, for per-store reference resolution.
+    configs: Vec<StoresConfig>,
+    /// (declaring member, alias) -> target member. Built during the walk,
+    /// so every alias resolves through the config that declared it.
+    targets: HashMap<(usize, String), usize>,
+    /// Conflicts found while walking: two members declaring the same
+    /// name, or a declaration that could not be located.
+    pub findings: Vec<String>,
+}
+
+impl StoreGraph {
+    /// Walk the declarations from a root store.
+    pub fn open(root: &Path, locator: &dyn SourceLocator) -> Result<Self> {
+        let root_config = StoresConfig::load(root)?;
+        let root_id =
+            StoreSource::Path(root.to_path_buf()).identity(Some(root), &LookupAdapter(locator));
+
+        let mut members = vec![Member {
+            id: root_id,
+            alias_path: Vec::new(),
+            source: StoreSource::Path(root.to_path_buf()),
+            root: Some(root.to_path_buf()),
+            unavailable: None,
+        }];
+        let mut configs = vec![root_config];
+        let mut findings = Vec::new();
+        let mut names: HashMap<String, StoreId> = HashMap::new();
+        let mut targets: HashMap<(usize, String), usize> = HashMap::new();
+
+        // Breadth-first so a nearer declaration wins the alias path.
+        let mut cursor = 0;
+        while cursor < members.len() {
+            let (decls, declaring_root) = {
+                let member = &members[cursor];
+                let Some(member_root) = member.root.clone() else {
+                    cursor += 1;
+                    continue;
+                };
+                (configs[cursor].stores.clone(), member_root)
+            };
+            let parent_path = members[cursor].alias_path.clone();
+
+            for decl in decls {
+                let mut alias_path = parent_path.clone();
+                alias_path.push(decl.alias.clone());
+
+                let located = locator.locate(&decl.source, &declaring_root);
+                let (root_dir, unavailable) = match located {
+                    Ok(dir) => (Some(dir), None),
+                    Err(why) => {
+                        findings.push(format!("store '{}' unavailable: {why}", alias_path.join("/")));
+                        (None, Some(why))
+                    }
+                };
+                let id = decl
+                    .source
+                    .identity(root_dir.as_deref(), &LookupAdapter(locator));
+
+                if let Some(existing) = members.iter().position(|m| m.id == id) {
+                    // Already in the closure under a nearer alias path,
+                    // or it is the root itself: one store, one member.
+                    // This is what makes a mutual cycle terminate. The
+                    // alias still resolves to that existing member.
+                    targets.insert((cursor, decl.alias.clone()), existing);
+                    continue;
+                }
+                targets.insert((cursor, decl.alias.clone()), members.len());
+
+                let config = match &root_dir {
+                    Some(dir) => match StoresConfig::load(dir) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            findings.push(format!(
+                                "store '{}' has an unreadable {STORES_FILE}: {e}",
+                                alias_path.join("/")
+                            ));
+                            StoresConfig::default()
+                        }
+                    },
+                    None => StoresConfig::default(),
+                };
+
+                if let Some(name) = &config.name {
+                    match names.get(name) {
+                        Some(other) if other != &id => findings.push(format!(
+                            "two stores declare the name '{name}' ({other} and {id})"
+                        )),
+                        _ => {
+                            names.insert(name.clone(), id.clone());
+                        }
+                    }
+                }
+
+                members.push(Member {
+                    id,
+                    alias_path,
+                    source: decl.source.clone(),
+                    root: root_dir,
+                    unavailable,
+                });
+                configs.push(config);
+            }
+            cursor += 1;
+        }
+
+        Ok(StoreGraph {
+            members,
+            configs,
+            targets,
+            findings,
+        })
+    }
+
+    /// The root store: the vantage every command runs from.
+    pub fn root(&self) -> &Member {
+        &self.members[0]
+    }
+
+    /// The alias table of a member, for resolving references written in
+    /// that member's documents. A reference is always resolved through
+    /// the config of the store that contains it, never the vantage's.
+    pub fn config(&self, index: usize) -> &StoresConfig {
+        &self.configs[index]
+    }
+
+    /// The member an alias names, as written in `from`'s documents.
+    ///
+    /// The alias table is always the declaring store's own. Two stores
+    /// can declare the same alias for different targets. A reference in
+    /// one store never resolves through the table of the other store.
+    pub fn target_of(&self, from: usize, alias: &str) -> Option<usize> {
+        self.targets.get(&(from, alias.to_string())).copied()
+    }
+
+    /// Members that could not be loaded, by alias path.
+    pub fn unavailable(&self) -> Vec<&Member> {
+        self.members
+            .iter()
+            .filter(|m| m.unavailable.is_some())
+            .collect()
+    }
+}
+
+/// Bridges a `SourceLocator` into the `OriginLookup` identity uses.
+struct LookupAdapter<'a>(&'a dyn SourceLocator);
+
+impl OriginLookup for LookupAdapter<'_> {
+    fn origin_url(&self, path: &Path) -> Option<String> {
+        self.0.origin_url(path)
+    }
+}
+
+// -- The file scan guard --
+
+/// One entry of a guarded scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanEntry {
+    pub path: PathBuf,
+    pub stem: String,
+}
+
+/// The result of scanning a store directory.
+#[derive(Debug, Default)]
+pub struct Scan {
+    pub entries: Vec<ScanEntry>,
+    /// Paths skipped by a guard, with the reason. Never silent: a
+    /// consumer's `check` command reports these.
+    pub skipped: Vec<(PathBuf, String)>,
+}
+
+/// Resolve a store's document directory, rejecting a configured value
+/// that is absolute or climbs out of the store root.
+///
+/// A dependency store holds third-party content. Its config must not
+/// point the reader at a directory outside the store.
+pub fn document_dir(root: &Path, configured: &str) -> Result<PathBuf> {
+    let rel = Path::new(configured);
+    if rel.is_absolute() {
+        return Err(Error::InvalidStore(format!(
+            "document directory '{configured}' must be relative to the store"
+        )));
+    }
+    if escapes_root(rel) {
+        return Err(Error::InvalidStore(format!(
+            "document directory '{configured}' leaves the store root"
+        )));
+    }
+    Ok(root.join(rel))
+}
+
+/// List the `.md` files of a store directory, skipping anything that is
+/// not a regular file.
+///
+/// Symlinks are skipped by type without being followed: a dependency
+/// store can ship `notes/key.md -> ~/.ssh/id_rsa`, and reading by
+/// extension alone would surface its contents as a document body.
+pub fn scan_documents(dir: &Path) -> Result<Scan> {
+    let mut scan = Scan::default();
+    if !dir.exists() {
+        return Ok(scan);
+    }
+    let mut paths: Vec<(PathBuf, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        // file_type() on the dirent does not follow symlinks.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            scan.skipped
+                .push((path, "symlink (not followed)".to_string()));
+            continue;
+        }
+        if !file_type.is_file() {
+            scan.skipped.push((path, "not a regular file".to_string()));
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            scan.skipped
+                .push((path, "name is not valid UTF-8".to_string()));
+            continue;
+        };
+        paths.push((path.clone(), stem.to_string()));
+    }
+    paths.sort();
+    scan.entries = paths
+        .into_iter()
+        .map(|(path, stem)| ScanEntry { path, stem })
+        .collect();
+    Ok(scan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Aliases(Vec<String>);
+    impl AliasSet for Aliases {
+        fn declares(&self, alias: &str) -> bool {
+            self.0.iter().any(|a| a == alias)
+        }
+    }
+
+    fn aliases(list: &[&str]) -> Aliases {
+        Aliases(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    // -- references --
+
+    #[test]
+    fn bare_id_has_no_alias() {
+        let r = StoreRef::parse("a3f2", &NoAliases);
+        assert_eq!(r, StoreRef::local("a3f2"));
+        assert!(!r.is_foreign());
+    }
+
+    #[test]
+    fn declared_alias_qualifies_the_reference() {
+        let r = StoreRef::parse("project:a3f2", &aliases(&["project"]));
+        assert_eq!(r.alias, vec!["project".to_string()]);
+        assert_eq!(r.id, "a3f2");
+        assert!(r.is_foreign());
+    }
+
+    #[test]
+    fn undeclared_head_stays_opaque() {
+        // The discrimination rule: a colon alone means nothing.
+        let r = StoreRef::parse("project:a3f2", &NoAliases);
+        assert_eq!(r, StoreRef::local("project:a3f2"));
+    }
+
+    #[test]
+    fn external_keys_keep_working() {
+        // A DOI, a legacy tisket depends_on entry, and a URL must not
+        // become references against a normal alias table.
+        for s in ["10.1145/12345", "x: y", "https://example.com/a", "RFC:8259"] {
+            let r = StoreRef::parse(s, &aliases(&["project", "org-kb"]));
+            assert_eq!(r, StoreRef::local(s), "{s} must stay opaque");
+        }
+    }
+
+    #[test]
+    fn a_declared_alias_wins_over_an_external_reading() {
+        // The rule is declaration, not shape: declaring 'doi' makes
+        // doi:x a reference. This is correct behavior, and it is also
+        // why `check` reports the qualifiers that a new alias shadows.
+        let r = StoreRef::parse("doi:10.1145/1", &aliases(&["doi"]));
+        assert!(r.is_foreign());
+        assert_eq!(r.id, "10.1145/1");
+    }
+
+    #[test]
+    fn only_the_first_colon_splits() {
+        let r = StoreRef::parse("project:a:b", &aliases(&["project"]));
+        assert_eq!(r.alias, vec!["project".to_string()]);
+        assert_eq!(r.id, "a:b");
+    }
+
+    #[test]
+    fn path_form_parses_when_the_head_is_declared() {
+        let r = StoreRef::parse("project/shared-kb:b7c1", &aliases(&["project"]));
+        assert_eq!(r.alias, vec!["project".to_string(), "shared-kb".to_string()]);
+        assert_eq!(r.id, "b7c1");
+    }
+
+    #[test]
+    fn path_form_with_undeclared_head_is_opaque() {
+        let r = StoreRef::parse("nope/shared-kb:b7c1", &aliases(&["project"]));
+        assert!(!r.is_foreign());
+    }
+
+    #[test]
+    fn empty_id_does_not_qualify() {
+        let r = StoreRef::parse("project:", &aliases(&["project"]));
+        assert_eq!(r, StoreRef::local("project:"));
+    }
+
+    #[test]
+    fn references_round_trip_through_display() {
+        for (s, decl) in [
+            ("a3f2", vec![]),
+            ("project:a3f2", vec!["project"]),
+            ("project/shared-kb:b7c1", vec!["project"]),
+        ] {
+            let r = StoreRef::parse(s, &aliases(&decl));
+            assert_eq!(r.to_string(), s);
+        }
+    }
+
+    // -- identity --
+
+    #[test]
+    fn urls_written_differently_share_an_identity() {
+        let a = StoreSource::Git {
+            url: "https://github.com/org/kb.git".into(),
+            rev: None,
+        };
+        let b = StoreSource::Git {
+            url: "git@github.com:org/kb".into(),
+            rev: None,
+        };
+        assert_eq!(a.identity(None, &NoOrigins), b.identity(None, &NoOrigins));
+    }
+
+    #[test]
+    fn a_rev_pin_does_not_change_identity() {
+        let a = StoreSource::Git {
+            url: "https://github.com/org/kb".into(),
+            rev: Some("v1.0".into()),
+        };
+        let b = StoreSource::Git {
+            url: "https://github.com/org/kb".into(),
+            rev: None,
+        };
+        assert_eq!(a.identity(None, &NoOrigins), b.identity(None, &NoOrigins));
+    }
+
+    #[test]
+    fn a_path_takes_its_origin_remote_identity() {
+        struct WithOrigin;
+        impl OriginLookup for WithOrigin {
+            fn origin_url(&self, _p: &Path) -> Option<String> {
+                Some("https://github.com/org/kb".into())
+            }
+        }
+        let dir = tempdir();
+        let by_path = StoreSource::Path(dir.clone());
+        let by_url = StoreSource::Git {
+            url: "git@github.com:org/kb.git".into(),
+            rev: None,
+        };
+        assert_eq!(
+            by_path.identity(Some(&dir), &WithOrigin),
+            by_url.identity(None, &NoOrigins),
+            "the same repo reached two ways is one store"
+        );
+    }
+
+    #[test]
+    fn identity_comes_from_the_resolved_location_not_the_declared_text() {
+        // '../b' in two stores names two directories. One directory
+        // that two different relative paths find is one store.
+        let base = tempdir();
+        std::fs::create_dir_all(base.join("shared")).unwrap();
+        let decl_a = StoreSource::Path("../shared".into());
+        let decl_b = StoreSource::Path("./shared".into());
+        let located = base.join("shared");
+        assert_eq!(
+            decl_a.identity(Some(&located), &NoOrigins),
+            decl_b.identity(Some(&located), &NoOrigins)
+        );
+
+        let other = base.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_ne!(
+            decl_a.identity(Some(&located), &NoOrigins),
+            decl_a.identity(Some(&other), &NoOrigins),
+            "same declared text, different locations, different stores"
+        );
+    }
+
+    // -- config --
+
+    #[test]
+    fn a_missing_stores_file_is_an_empty_config() {
+        let dir = tempdir();
+        let config = StoresConfig::load(&dir).unwrap();
+        assert!(config.stores.is_empty());
+        assert_eq!(config.format, None);
+    }
+
+    #[test]
+    fn declarations_parse_with_their_sources() {
+        let dir = tempdir();
+        write(
+            &dir.join(STORES_FILE),
+            "format: 2\nstores:\n  - alias: project\n    path: ../project\n  - alias: org-kb\n    git: https://github.com/org/kb\n    rev: v1.0\n",
+        );
+        let config = StoresConfig::load(&dir).unwrap();
+        assert_eq!(config.aliases(), vec!["project", "org-kb"]);
+        assert_eq!(
+            config.source("project"),
+            Some(&StoreSource::Path("../project".into()))
+        );
+        assert!(matches!(
+            config.source("org-kb"),
+            Some(StoreSource::Git { rev: Some(r), .. }) if r == "v1.0"
+        ));
+    }
+
+    #[test]
+    fn a_source_needs_exactly_one_kind() {
+        let dir = tempdir();
+        for yaml in [
+            "stores:\n  - alias: a\n",
+            "stores:\n  - alias: a\n    path: ../x\n    git: https://e.com/x\n",
+            "stores:\n  - alias: a\n    path: ../x\n    rev: v1\n",
+        ] {
+            write(&dir.join(STORES_FILE), yaml);
+            assert!(StoresConfig::load(&dir).is_err(), "must reject: {yaml}");
+        }
+    }
+
+    #[test]
+    fn a_newer_format_is_rejected() {
+        let dir = tempdir();
+        write(&dir.join(STORES_FILE), "format: 99\nstores: []\n");
+        let err = StoresConfig::load(&dir).unwrap_err().to_string();
+        assert!(err.contains("99"), "{err}");
+    }
+
+    #[test]
+    fn a_duplicate_alias_is_rejected() {
+        let dir = tempdir();
+        write(
+            &dir.join(STORES_FILE),
+            "stores:\n  - alias: a\n    path: ../x\n  - alias: a\n    path: ../y\n",
+        );
+        assert!(StoresConfig::load(&dir).is_err());
+    }
+
+    #[test]
+    fn shared_stores_may_not_declare_paths_that_leave_the_repo() {
+        let config = StoresConfig {
+            format: Some(2),
+            name: None,
+            shared: true,
+            stores: vec![
+                StoreDecl {
+                    alias: "inside".into(),
+                    source: StoreSource::Path("sub/kb".into()),
+                },
+                StoreDecl {
+                    alias: "sibling".into(),
+                    source: StoreSource::Path("../sibling".into()),
+                },
+                StoreDecl {
+                    alias: "home".into(),
+                    source: StoreSource::Path("~/kb".into()),
+                },
+                StoreDecl {
+                    alias: "abs".into(),
+                    source: StoreSource::Path("/srv/kb".into()),
+                },
+            ],
+        };
+        let bad: Vec<String> = config
+            .unshareable(Path::new("/repo"))
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect();
+        assert_eq!(bad, vec!["sibling", "home", "abs"]);
+
+        // A private store may point anywhere: nobody else resolves it.
+        let private = StoresConfig {
+            shared: false,
+            ..config
+        };
+        assert!(private.unshareable(Path::new("/repo")).is_empty());
+    }
+
+    // -- the graph --
+
+    fn store_at(dir: &Path, yaml: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        write(&dir.join(STORES_FILE), yaml);
+    }
+
+    #[test]
+    fn a_chain_yields_every_member_once() {
+        let base = tempdir();
+        store_at(&base.join("a"), "stores:\n  - alias: b\n    path: ../b\n");
+        store_at(&base.join("b"), "stores:\n  - alias: c\n    path: ../c\n");
+        store_at(&base.join("c"), "stores: []\n");
+        let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
+        let paths: Vec<String> = graph
+            .members
+            .iter()
+            .map(|m| m.alias_path.join("/"))
+            .collect();
+        assert_eq!(paths, vec!["", "b", "b/c"]);
+    }
+
+    #[test]
+    fn a_mutual_cycle_terminates() {
+        let base = tempdir();
+        store_at(&base.join("a"), "stores:\n  - alias: b\n    path: ../b\n");
+        store_at(&base.join("b"), "stores:\n  - alias: a\n    path: ../a\n");
+        let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
+        assert_eq!(graph.members.len(), 2, "each store once");
+    }
+
+    #[test]
+    fn a_diamond_yields_the_shared_store_once() {
+        let base = tempdir();
+        store_at(
+            &base.join("a"),
+            "stores:\n  - alias: b\n    path: ../b\n  - alias: c\n    path: ../c\n",
+        );
+        store_at(&base.join("b"), "stores:\n  - alias: d\n    path: ../d\n");
+        store_at(&base.join("c"), "stores:\n  - alias: d\n    path: ../d\n");
+        store_at(&base.join("d"), "stores: []\n");
+        let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
+        assert_eq!(graph.members.len(), 4);
+        let d: Vec<&Member> = graph
+            .members
+            .iter()
+            .filter(|m| m.alias_path.last().map(|s| s.as_str()) == Some("d"))
+            .collect();
+        assert_eq!(d.len(), 1, "the shared store is one member");
+        assert_eq!(d[0].alias_path, vec!["b".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn an_alias_resolves_through_the_declaring_store() {
+        // The confused-deputy case: root and dep both declare 'kb', at
+        // different stores. A reference in the dep must reach the dep's.
+        let base = tempdir();
+        store_at(
+            &base.join("root"),
+            "stores:\n  - alias: dep\n    path: ../dep\n  - alias: kb\n    path: ../root-kb\n",
+        );
+        store_at(&base.join("dep"), "stores:\n  - alias: kb\n    path: ../dep-kb\n");
+        store_at(&base.join("root-kb"), "stores: []\n");
+        store_at(&base.join("dep-kb"), "stores: []\n");
+        let graph = StoreGraph::open(&base.join("root"), &LocalPaths).unwrap();
+
+        let dep = graph
+            .members
+            .iter()
+            .position(|m| m.alias_path == vec!["dep".to_string()])
+            .unwrap();
+        let from_root = graph.target_of(0, "kb").unwrap();
+        let from_dep = graph.target_of(dep, "kb").unwrap();
+        assert_ne!(
+            from_root, from_dep,
+            "the same alias names different stores in different configs"
+        );
+        assert!(graph.members[from_root].root.as_ref().unwrap().ends_with("root-kb"));
+        assert!(graph.members[from_dep].root.as_ref().unwrap().ends_with("dep-kb"));
+    }
+
+    #[test]
+    fn a_missing_dependency_is_reported_not_fatal() {
+        let base = tempdir();
+        store_at(&base.join("a"), "stores:\n  - alias: gone\n    path: ../gone\n");
+        let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
+        assert_eq!(graph.members.len(), 2);
+        assert_eq!(graph.unavailable().len(), 1);
+        assert!(graph.findings.iter().any(|f| f.contains("gone")));
+    }
+
+    #[test]
+    fn members_qualify_their_documents() {
+        let base = tempdir();
+        store_at(&base.join("a"), "stores:\n  - alias: b\n    path: ../b\n");
+        store_at(&base.join("b"), "stores:\n  - alias: c\n    path: ../c\n");
+        store_at(&base.join("c"), "stores: []\n");
+        let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
+        assert_eq!(graph.members[0].qualify("a3f2"), "a3f2");
+        assert_eq!(graph.members[1].qualify("a3f2"), "b:a3f2");
+        assert_eq!(graph.members[2].qualify("a3f2"), "b/c:a3f2");
+    }
+
+    // -- guards --
+
+    #[test]
+    fn a_document_dir_may_not_escape_the_store() {
+        assert!(document_dir(Path::new("/store"), ".zettel").is_ok());
+        assert!(document_dir(Path::new("/store"), "sub/.zettel").is_ok());
+        assert!(document_dir(Path::new("/store"), "/etc").is_err());
+        assert!(document_dir(Path::new("/store"), "../../etc").is_err());
+        assert!(document_dir(Path::new("/store"), "a/../../etc").is_err());
+    }
+
+    #[test]
+    fn a_symlinked_document_is_skipped_and_reported() {
+        let dir = tempdir();
+        write(&dir.join("real.md"), "---\ntitle: t\n---\n");
+        let secret = dir.join("secret.txt");
+        write(&secret, "PRIVATE KEY");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, dir.join("stolen.md")).unwrap();
+
+        let scan = scan_documents(&dir).unwrap();
+        let stems: Vec<&str> = scan.entries.iter().map(|e| e.stem.as_str()).collect();
+        assert_eq!(stems, vec!["real"], "only the real file is a document");
+        assert_eq!(scan.skipped.len(), 1);
+        assert!(scan.skipped[0].1.contains("symlink"));
+    }
+
+    #[test]
+    fn a_scan_of_a_missing_directory_is_empty() {
+        let scan = scan_documents(&tempdir().join("nope")).unwrap();
+        assert!(scan.entries.is_empty());
+        assert!(scan.skipped.is_empty());
+    }
+
+    // -- helpers --
+
+    fn tempdir() -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "mdstore-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn write(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+}
