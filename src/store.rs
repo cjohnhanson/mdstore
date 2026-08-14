@@ -135,6 +135,9 @@ pub enum StoreSource {
     Path(PathBuf),
     /// A git repository. Read-only, fetched into a bare cache.
     Git { url: String, rev: Option<String> },
+    /// Objects under one prefix in object storage. Read-only, copied
+    /// into the cache by an explicit sync.
+    Blob { url: String },
 }
 
 /// The on-disk shape of a source declaration.
@@ -146,25 +149,37 @@ struct SourceFields {
     git: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rev: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blob: Option<String>,
 }
 
 impl TryFrom<SourceFields> for StoreSource {
     type Error = String;
 
     fn try_from(f: SourceFields) -> std::result::Result<Self, String> {
-        match (f.path, f.git) {
-            (Some(_), Some(_)) => {
-                Err("a store declares either 'path' or 'git', not both".into())
-            }
-            (Some(p), None) => {
-                if f.rev.is_some() {
-                    return Err("'rev' applies to a git source, not a path".into());
-                }
-                Ok(StoreSource::Path(p))
-            }
-            (None, Some(url)) => Ok(StoreSource::Git { url, rev: f.rev }),
-            (None, None) => Err("a store needs a 'path' or a 'git' source".into()),
+        let kinds = [f.path.is_some(), f.git.is_some(), f.blob.is_some()]
+            .iter()
+            .filter(|present| **present)
+            .count();
+        if kinds > 1 {
+            return Err("a store declares one of 'path', 'git', or 'blob'".into());
         }
+        if let Some(p) = f.path {
+            if f.rev.is_some() {
+                return Err("'rev' applies to a git source, not a path".into());
+            }
+            return Ok(StoreSource::Path(p));
+        }
+        if let Some(url) = f.git {
+            return Ok(StoreSource::Git { url, rev: f.rev });
+        }
+        if let Some(url) = f.blob {
+            if f.rev.is_some() {
+                return Err("'rev' applies to a git source, not a blob".into());
+            }
+            return Ok(StoreSource::Blob { url });
+        }
+        Err("a store needs a 'path', 'git', or 'blob' source".into())
     }
 }
 
@@ -175,11 +190,19 @@ impl From<StoreSource> for SourceFields {
                 path: Some(p),
                 git: None,
                 rev: None,
+                blob: None,
             },
             StoreSource::Git { url, rev } => SourceFields {
                 path: None,
                 git: Some(url),
                 rev,
+                blob: None,
+            },
+            StoreSource::Blob { url } => SourceFields {
+                path: None,
+                git: None,
+                rev: None,
+                blob: Some(url),
             },
         }
     }
@@ -201,8 +224,10 @@ impl StoreSource {
     /// directories. `../a` in a dependency names the root store itself,
     /// which is how a mutual cycle closes.
     pub fn identity(&self, located: Option<&Path>, origin_of: &dyn OriginLookup) -> StoreId {
-        if let StoreSource::Git { url, .. } = self {
-            return StoreId(canonical_url(url));
+        match self {
+            StoreSource::Git { url, .. } => return StoreId(canonical_url(url)),
+            StoreSource::Blob { url } => return StoreId(format!("blob:{}", canonical_url(url))),
+            StoreSource::Path(_) => {}
         }
         let Some(dir) = located else {
             // Unresolvable: fall back to the declared text so repeated
@@ -234,6 +259,11 @@ impl OriginLookup for NoOrigins {
     fn origin_url(&self, _path: &Path) -> Option<String> {
         None
     }
+}
+
+/// The canonical URL, for the git cache to key its clones by.
+pub(crate) fn canonical_url_for_cache(url: &str) -> String {
+    canonical_url(url)
 }
 
 /// Normalize a remote URL so the same repository written different ways
@@ -305,11 +335,15 @@ impl StoresConfig {
     /// Load `stores.yml` from a store root. A missing file is an empty
     /// config, so every repo written before this feature keeps working.
     pub fn load(root: &Path) -> Result<Self> {
-        let path = root.join(STORES_FILE);
-        if !path.exists() {
+        Self::load_from(&StoreContent::Dir(root.to_path_buf()))
+    }
+
+    /// Load `stores.yml` from a store, local or remote.
+    pub fn load_from(content: &StoreContent) -> Result<Self> {
+        if !content.exists(STORES_FILE) {
             return Ok(StoresConfig::default());
         }
-        let text = std::fs::read_to_string(&path)?;
+        let text = content.read(STORES_FILE)?;
         let config: StoresConfig = serde_yml::from_str(&text)?;
         config.validate()?;
         Ok(config)
@@ -426,8 +460,8 @@ pub struct Member {
     /// for one reached through it.
     pub alias_path: Vec<String>,
     pub source: StoreSource,
-    /// The resolved location, when the source could be located.
-    pub root: Option<PathBuf>,
+    /// Where the documents are, when the source could be located.
+    pub content: Option<StoreContent>,
     /// Why the member could not be loaded, if it could not.
     pub unavailable: Option<String>,
 }
@@ -446,8 +480,12 @@ impl Member {
 /// Locates a declared source on this machine. Consumers implement it so
 /// that git fetching and machine-local overrides stay out of this module.
 pub trait SourceLocator {
-    /// The directory holding a source's documents, or why it is absent.
-    fn locate(&self, source: &StoreSource, declaring_root: &Path) -> std::result::Result<PathBuf, String>;
+    /// Where a source's documents can be read, or why they cannot.
+    fn locate(
+        &self,
+        source: &StoreSource,
+        declaring_root: &Path,
+    ) -> std::result::Result<StoreContent, String>;
     /// The origin remote of a checkout, for identity.
     fn origin_url(&self, _path: &Path) -> Option<String> {
         None
@@ -460,12 +498,104 @@ impl<T: SourceLocator> OriginLookup for T {
     }
 }
 
-/// Resolves declared sources to local directories with no fetching and
-/// no overrides: paths resolve relative to the declaring store.
+/// Where one store's documents are.
+///
+/// A local store reads from a directory. A remote store reads from git
+/// objects at one revision, because a bare clone has no working tree.
+/// That is what lets two consumers pin different revisions of one URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreContent {
+    Dir(PathBuf),
+    GitTree {
+        /// The bare clone.
+        cache: PathBuf,
+        /// The resolved commit. Fixed when the graph opens, so one
+        /// command sees one state of the store.
+        rev: String,
+        /// The URL, for messages.
+        url: String,
+    },
+}
+
+impl StoreContent {
+    /// Read a file, by a path relative to the store root.
+    pub fn read(&self, rel: &str) -> Result<String> {
+        match self {
+            StoreContent::Dir(dir) => Ok(std::fs::read_to_string(dir.join(rel))?),
+            StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel),
+        }
+    }
+
+    /// True when the store holds this file.
+    pub fn exists(&self, rel: &str) -> bool {
+        match self {
+            StoreContent::Dir(dir) => dir.join(rel).exists(),
+            StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel).is_ok(),
+        }
+    }
+
+    /// The `.md` files of a subdirectory, with their stems.
+    ///
+    /// A directory scan skips every entry that is not a regular file. A
+    /// git tree gives its entries from objects, so a symlink in a remote
+    /// store cannot reach a file outside the repository.
+    pub fn scan(&self, subdir: &str) -> Result<Scan> {
+        match self {
+            StoreContent::Dir(root) => scan_documents(&root.join(subdir)),
+            StoreContent::GitTree { cache, rev, .. } => {
+                let mut scan = Scan::default();
+                let mut names = crate::git::list_tree(cache, rev, subdir)?;
+                names.sort();
+                for name in names {
+                    if !name.ends_with(".md") || name.contains('/') {
+                        continue;
+                    }
+                    scan.entries.push(ScanEntry {
+                        path: PathBuf::from(subdir).join(&name),
+                        stem: name.trim_end_matches(".md").to_string(),
+                    });
+                }
+                Ok(scan)
+            }
+        }
+    }
+
+    /// A directory on this machine, if the store has one.
+    pub fn dir(&self) -> Option<&Path> {
+        match self {
+            StoreContent::Dir(p) => Some(p),
+            StoreContent::GitTree { .. } => None,
+        }
+    }
+
+    /// True when a remote cache holds the store.
+    pub fn is_remote(&self) -> bool {
+        matches!(self, StoreContent::GitTree { .. })
+    }
+
+    /// The time since the last fetch, for a remote store. A stale answer
+    /// must look stale.
+    pub fn fetch_age(&self) -> Option<String> {
+        match self {
+            StoreContent::Dir(_) => None,
+            StoreContent::GitTree { cache, .. } => {
+                crate::git::seconds_since_fetch(cache).map(crate::git::humanize_age)
+            }
+        }
+    }
+}
+
+/// Resolves declared sources with no network access: a path resolves
+/// relative to the declaring store, and a git source resolves only if
+/// its clone is already in the cache.
 pub struct LocalPaths;
 
 impl SourceLocator for LocalPaths {
-    fn locate(&self, source: &StoreSource, declaring_root: &Path) -> std::result::Result<PathBuf, String> {
+    fn locate(
+        &self,
+        source: &StoreSource,
+        declaring_root: &Path,
+    ) -> std::result::Result<StoreContent, String> {
         match source {
             StoreSource::Path(p) => {
                 let joined = if p.is_absolute() {
@@ -474,15 +604,54 @@ impl SourceLocator for LocalPaths {
                     declaring_root.join(p)
                 };
                 if joined.is_dir() {
-                    Ok(joined)
+                    Ok(StoreContent::Dir(joined))
                 } else {
                     Err(format!("no directory at {}", joined.display()))
                 }
             }
-            StoreSource::Git { url, .. } => {
-                Err(format!("git source {url} needs a locator that fetches"))
+            StoreSource::Blob { url } => {
+                let dir = crate::blob::locate(url)?;
+                Ok(StoreContent::Dir(dir))
+            }
+            StoreSource::Git { url, rev } => {
+                if !crate::git::is_cached(url) {
+                    return Err(format!("{url} is not in the cache; run store sync"));
+                }
+                let cache = crate::git::cache_dir(url);
+                let resolved = crate::git::resolve_rev(&cache, rev.as_deref())
+                    .map_err(|e| format!("{url}: {e}"))?;
+                Ok(StoreContent::GitTree {
+                    cache,
+                    rev: resolved,
+                    url: url.clone(),
+                })
             }
         }
+    }
+
+    fn origin_url(&self, path: &Path) -> Option<String> {
+        crate::git::origin_url(path)
+    }
+}
+
+/// Resolves declared sources and clones a git source that is absent.
+/// Only a command that the user expects to reach the network uses this.
+pub struct FetchingLocator;
+
+impl SourceLocator for FetchingLocator {
+    fn locate(
+        &self,
+        source: &StoreSource,
+        declaring_root: &Path,
+    ) -> std::result::Result<StoreContent, String> {
+        if let StoreSource::Git { url, .. } = source {
+            crate::git::ensure_clone(url).map_err(|e| e.to_string())?;
+        }
+        LocalPaths.locate(source, declaring_root)
+    }
+
+    fn origin_url(&self, path: &Path) -> Option<String> {
+        crate::git::origin_url(path)
     }
 }
 
@@ -516,7 +685,7 @@ impl StoreGraph {
             id: root_id,
             alias_path: Vec::new(),
             source: StoreSource::Path(root.to_path_buf()),
-            root: Some(root.to_path_buf()),
+            content: Some(StoreContent::Dir(root.to_path_buf())),
             unavailable: None,
         }];
         let mut configs = vec![root_config];
@@ -529,9 +698,15 @@ impl StoreGraph {
         while cursor < members.len() {
             let (decls, declaring_root) = {
                 let member = &members[cursor];
-                let Some(member_root) = member.root.clone() else {
-                    cursor += 1;
-                    continue;
+                // A remote store declares its own dependencies by URL,
+                // never by a path, so a store with no local directory
+                // resolves its declarations against its cache root.
+                let member_root = match &member.content {
+                    Some(c) => c.dir().map(|d| d.to_path_buf()).unwrap_or_default(),
+                    None => {
+                        cursor += 1;
+                        continue;
+                    }
                 };
                 (configs[cursor].stores.clone(), member_root)
             };
@@ -542,16 +717,17 @@ impl StoreGraph {
                 alias_path.push(decl.alias.clone());
 
                 let located = locator.locate(&decl.source, &declaring_root);
-                let (root_dir, unavailable) = match located {
-                    Ok(dir) => (Some(dir), None),
+                let (content, unavailable) = match located {
+                    Ok(c) => (Some(c), None),
                     Err(why) => {
                         findings.push(format!("store '{}' unavailable: {why}", alias_path.join("/")));
                         (None, Some(why))
                     }
                 };
-                let id = decl
-                    .source
-                    .identity(root_dir.as_deref(), &LookupAdapter(locator));
+                let id = decl.source.identity(
+                    content.as_ref().and_then(|c| c.dir()),
+                    &LookupAdapter(locator),
+                );
 
                 if let Some(existing) = members.iter().position(|m| m.id == id) {
                     // Already in the closure under a nearer alias path,
@@ -563,9 +739,9 @@ impl StoreGraph {
                 }
                 targets.insert((cursor, decl.alias.clone()), members.len());
 
-                let config = match &root_dir {
-                    Some(dir) => match StoresConfig::load(dir) {
-                        Ok(c) => c,
+                let config = match &content {
+                    Some(c) => match StoresConfig::load_from(c) {
+                        Ok(cfg) => cfg,
                         Err(e) => {
                             findings.push(format!(
                                 "store '{}' has an unreadable {STORES_FILE}: {e}",
@@ -592,7 +768,7 @@ impl StoreGraph {
                     id,
                     alias_path,
                     source: decl.source.clone(),
-                    root: root_dir,
+                    content,
                     unavailable,
                 });
                 configs.push(config);
@@ -727,6 +903,19 @@ pub fn scan_documents(dir: &Path) -> Result<Scan> {
         .map(|(path, stem)| ScanEntry { path, stem })
         .collect();
     Ok(scan)
+}
+
+/// Fetch the current state of a remote source into the cache.
+///
+/// Only a command that the user expects to reach the network calls
+/// this. Every other command reads what the cache already holds, so an
+/// answer never changes because of a background fetch.
+pub fn sync_source(source: &StoreSource) -> Result<()> {
+    match source {
+        StoreSource::Path(_) => Ok(()),
+        StoreSource::Git { url, .. } => crate::git::fetch(url),
+        StoreSource::Blob { url } => crate::blob::sync(url).map(|_| ()),
+    }
 }
 
 #[cfg(test)]
@@ -1075,8 +1264,8 @@ mod tests {
             from_root, from_dep,
             "the same alias names different stores in different configs"
         );
-        assert!(graph.members[from_root].root.as_ref().unwrap().ends_with("root-kb"));
-        assert!(graph.members[from_dep].root.as_ref().unwrap().ends_with("dep-kb"));
+        assert!(graph.members[from_root].content.as_ref().unwrap().dir().unwrap().ends_with("root-kb"));
+        assert!(graph.members[from_dep].content.as_ref().unwrap().dir().unwrap().ends_with("dep-kb"));
     }
 
     #[test]
