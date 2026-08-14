@@ -10,6 +10,25 @@ pub struct Document<T> {
     pub body: String,
 }
 
+/// Split a document into its raw frontmatter text and its body.
+///
+/// The frontmatter comes back as it was written, so a caller that must
+/// hand it on unchanged does not re-serialize it. The skills extension
+/// asks for verbatim frontmatter, and a client compares what a listing
+/// gave against what a fetch gave.
+pub fn split(content: &str) -> Result<(&str, &str)> {
+    let content = content.trim();
+    if !content.starts_with("---") {
+        return Err(Error::MissingFrontmatter);
+    }
+    let after_first = &content[3..].trim_start_matches('\n');
+    let end = after_first.find("---").ok_or(Error::UnclosedFrontmatter)?;
+    Ok((
+        after_first[..end].trim_end(),
+        after_first[end + 3..].trim_start_matches('\n'),
+    ))
+}
+
 /// Parse a `---`-fenced YAML frontmatter document into a typed frontmatter and body.
 pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
     let content = content.trim();
@@ -88,6 +107,28 @@ mod tests {
         let content = "---\ntitle: \"Hello\"\n";
         let result = parse::<TestFrontmatter>(content);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn split_gives_the_frontmatter_as_written() {
+        let content = "---\nname: probe\ndescription: \"a: b\"\n---\n\nBody here.\n";
+        let (frontmatter, body) = split(content).unwrap();
+        assert_eq!(frontmatter, "name: probe\ndescription: \"a: b\"");
+        assert_eq!(body, "Body here.");
+    }
+
+    #[test]
+    fn split_rejects_what_parse_rejects() {
+        assert!(split("no frontmatter").is_err());
+        assert!(split("---\nunclosed: yes\n").is_err());
+    }
+
+    #[test]
+    fn split_and_parse_agree_on_the_body() {
+        let content = "---\ntitle: t\n---\n\nOne\n\nTwo\n";
+        let (_, split_body) = split(content).unwrap();
+        let doc: Document<TestFrontmatter> = parse(content).unwrap();
+        assert_eq!(split_body.trim(), doc.body);
     }
 
     #[test]
