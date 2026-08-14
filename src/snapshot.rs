@@ -41,7 +41,7 @@ pub trait DocumentSource {
     /// stop a whole store.
     fn load(
         &self,
-        root: &std::path::Path,
+        content: &crate::store::StoreContent,
         skipped: &mut Vec<String>,
     ) -> Result<Vec<Entry<Self::Doc>>>;
 
@@ -89,10 +89,10 @@ impl<S: DocumentSource> Snapshot<S> {
         let mut skipped: Vec<String> = Vec::new();
 
         for member in &graph.members {
-            match &member.root {
-                Some(root) => {
+            match &member.content {
+                Some(content) => {
                     let mut member_skipped = Vec::new();
-                    let loaded = source.load(root, &mut member_skipped)?;
+                    let loaded = source.load(content, &mut member_skipped)?;
                     for s in member_skipped {
                         skipped.push(format!("{}: {s}", label(member)));
                     }
@@ -290,15 +290,19 @@ mod tests {
     impl DocumentSource for Toy {
         type Doc = ToyDoc;
 
-        fn load(&self, root: &Path, skipped: &mut Vec<String>) -> Result<Vec<Entry<ToyDoc>>> {
+        fn load(
+            &self,
+            content: &crate::store::StoreContent,
+            skipped: &mut Vec<String>,
+        ) -> Result<Vec<Entry<ToyDoc>>> {
             *self.reads.borrow_mut() += 1;
-            let scan = crate::store::scan_documents(root)?;
+            let scan = content.scan("")?;
             for (path, why) in scan.skipped {
                 skipped.push(format!("{} ({why})", path.display()));
             }
             let mut out = Vec::new();
             for entry in scan.entries {
-                let text = std::fs::read_to_string(&entry.path)?;
+                let text = content.read(&entry.path.to_string_lossy())?;
                 out.push(Entry {
                     id: entry.stem,
                     doc: ToyDoc {
@@ -501,7 +505,7 @@ mod tests {
             snap.graph
                 .members
                 .iter()
-                .position(|m| m.root.as_ref().is_some_and(|r| r.ends_with(name)))
+                .position(|m| m.content.as_ref().and_then(|c| c.dir()).is_some_and(|r| r.ends_with(name)))
                 .unwrap()
         };
         let root_doc = DocId {
