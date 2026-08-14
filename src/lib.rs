@@ -2,6 +2,8 @@ pub mod blob;
 pub mod document;
 pub mod error;
 pub mod git;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod provenance;
 pub mod registry;
 pub mod selector;
