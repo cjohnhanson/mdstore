@@ -8,6 +8,9 @@ pub enum Error {
 
     #[error("{0}")]
     Yaml(#[from] serde_yml::Error),
+
+    #[error("invalid provenance: {0}")]
+    InvalidProvenance(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
