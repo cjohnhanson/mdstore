@@ -208,6 +208,23 @@ impl From<StoreSource> for SourceFields {
     }
 }
 
+/// True when a declared path resolves outside the repository.
+///
+/// The text of the path is checked separately. This asks the
+/// filesystem, so a link inside the repository that points out of it
+/// is caught as well.
+fn resolves_outside(repo_root: &Path, declared: &Path) -> bool {
+    let (Ok(root), Ok(target)) = (
+        repo_root.canonicalize(),
+        repo_root.join(declared).canonicalize(),
+    ) else {
+        // A path that does not resolve is reported by the reachability
+        // check instead, and reporting it twice helps nobody.
+        return false;
+    };
+    !target.starts_with(&root)
+}
+
 /// True when a source names a location this machine reaches over a
 /// network, and false for anything that resolves on this machine.
 ///
@@ -378,7 +395,16 @@ impl StoresConfig {
 
     /// Load `stores.yml` from a store, local or remote.
     pub fn load_from(content: &StoreContent) -> Result<Self> {
+        // Absent and refused are different answers. A store with no
+        // declarations is ordinary; a stores.yml that is a symlink is
+        // a store whose declarations were dropped, and reading that as
+        // "declares nothing" hid every dependency it had.
         if !content.exists(STORES_FILE) {
+            if content.present_but_irregular(STORES_FILE) {
+                return Err(Error::InvalidStore(format!(
+                    "{STORES_FILE} is not a regular file"
+                )));
+            }
             return Ok(StoresConfig::default());
         }
         let text = content.read(STORES_FILE)?;
@@ -455,6 +481,13 @@ impl StoresConfig {
                 Some("home-anchored path".to_string())
             } else if escapes_root(p) {
                 Some("path leaves the repository".to_string())
+            } else if resolves_outside(repo_root, p) {
+                // The text stays inside the repository and the
+                // filesystem does not: a link committed to the repo
+                // points wherever the declaring machine put it, and
+                // every other clone follows it somewhere else or
+                // nowhere.
+                Some("path resolves outside the repository through a link".to_string())
             } else {
                 None
             };
@@ -582,6 +615,22 @@ impl StoreContent {
         match self {
             StoreContent::Dir(dir) => is_regular_file(&dir.join(rel)),
             StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel).is_ok(),
+        }
+    }
+
+    /// True when the path exists but is not a regular file.
+    ///
+    /// A directory read skips a link by type, so this is what tells a
+    /// caller that something was there and was refused.
+    #[must_use]
+    pub fn present_but_irregular(&self, rel: &str) -> bool {
+        match self {
+            StoreContent::Dir(dir) => {
+                let p = dir.join(rel);
+                std::fs::symlink_metadata(&p).is_ok() && !is_regular_file(&p)
+            }
+            // A git tree holds objects, not links into a filesystem.
+            StoreContent::GitTree { .. } => false,
         }
     }
 
@@ -1653,6 +1702,46 @@ mod tests {
         let _ = write_document(&doc, "new content");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
         assert!(!std::fs::symlink_metadata(&doc).unwrap().file_type().is_symlink());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_shared_store_may_not_reach_outside_through_a_link() {
+        let base = std::env::temp_dir().join(format!("mdstore-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("repo")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("repo").join("linked")).unwrap();
+        std::fs::create_dir_all(base.join("repo").join("inside")).unwrap();
+
+        let config: StoresConfig = yaml_serde::from_str(
+            "shared: true\nstores:\n  - alias: near\n    path: inside\n  \
+             - alias: far\n    path: linked\n",
+        )
+        .unwrap();
+        let bad = config.unshareable(&base.join("repo"));
+        let aliases: Vec<&str> = bad.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(aliases, vec!["far"], "{bad:?}");
+        assert!(bad[0].1.contains("through a link"), "{bad:?}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_stores_file_that_is_a_link_is_refused_not_ignored() {
+        let base = std::env::temp_dir().join(format!("mdstore-storesfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("store")).unwrap();
+        std::fs::write(base.join("elsewhere.yml"), "stores: []\n").unwrap();
+        std::os::unix::fs::symlink(
+            base.join("elsewhere.yml"),
+            base.join("store").join(STORES_FILE),
+        )
+        .unwrap();
+
+        let err = StoresConfig::load(&base.join("store")).unwrap_err();
+        assert!(format!("{err}").contains("not a regular file"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);
     }
