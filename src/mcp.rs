@@ -456,3 +456,90 @@ mod tests {
         );
     }
 }
+
+// -- Network exposure --
+
+/// True when the bind address listens only on this machine.
+///
+/// A served store answers whoever reaches it. On a loopback address
+/// that is the person at the keyboard. On any other address it is the
+/// network, and the store has no authentication of its own.
+#[must_use]
+pub fn addr_is_loopback(addr: &str) -> bool {
+    // A bare IPv6 address holds colons of its own, so try the whole
+    // string before splitting a port off it.
+    if let Ok(ip) = addr.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    let host = match addr.rsplit_once(':') {
+        // [::1]:7431 and 127.0.0.1:7431
+        Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => h,
+        _ => addr,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+/// True when a browser origin belongs to this machine.
+///
+/// A page on the open web can post to a local server, and the reply
+/// stays inside the browser only if the server refuses the request.
+/// A request with no `Origin` header is not a browser request, so a
+/// caller that sends none is left alone.
+#[must_use]
+pub fn origin_is_local(origin: &str) -> bool {
+    let rest = match origin.split_once("://") {
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("https") => rest,
+        _ => return false,
+    };
+    if let Ok(ip) = rest.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    let host = match rest.rsplit_once(':') {
+        Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => h,
+        _ => rest,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod exposure_tests {
+    use super::*;
+
+    #[test]
+    fn a_loopback_bind_is_recognized_in_every_spelling() {
+        assert!(addr_is_loopback("127.0.0.1:7431"));
+        assert!(addr_is_loopback("127.0.0.1"));
+        assert!(addr_is_loopback("[::1]:7431"));
+        assert!(addr_is_loopback("::1"));
+        assert!(addr_is_loopback("127.5.5.5:80"));
+
+        assert!(!addr_is_loopback("0.0.0.0:7431"));
+        assert!(!addr_is_loopback("192.168.1.10:7431"));
+        assert!(!addr_is_loopback("[::]:7431"));
+        assert!(!addr_is_loopback("example.com:7431"));
+    }
+
+    #[test]
+    fn only_a_local_origin_is_local() {
+        assert!(origin_is_local("http://localhost:3000"));
+        assert!(origin_is_local("http://127.0.0.1:8080"));
+        assert!(origin_is_local("http://[::1]:8080"));
+        assert!(origin_is_local("https://localhost"));
+
+        assert!(!origin_is_local("http://evil.example.com"));
+        assert!(!origin_is_local("https://localhost.evil.com"));
+        assert!(!origin_is_local("file://"));
+        assert!(!origin_is_local("null"));
+        assert!(!origin_is_local(""));
+    }
+}
