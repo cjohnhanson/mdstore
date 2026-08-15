@@ -16,6 +16,8 @@ pub use error::{Error, Result};
 pub use provenance::{Marker, Span};
 pub use snapshot::{DocId, DocumentSource, Snapshot};
 pub use registry::Registry;
-pub use store::{Member, StoreContent, StoreGraph, StoreId, StoreRef, StoreSource, StoresConfig};
+pub use store::{
+    Member, StoreContent, StoreGraph, StoreId, StoreRef, StoreSource, StoresConfig, is_plain_stem,
+};
 pub use selector::Selector;
 pub use slug::{extract_prefix, generate_prefix, has_prefix, slugify};

@@ -208,6 +208,44 @@ impl From<StoreSource> for SourceFields {
     }
 }
 
+/// True when a source names a location this machine reaches over a
+/// network, and false for anything that resolves on this machine.
+///
+/// A store that a stranger publishes may declare only the first kind.
+/// `git:` and `blob:` accept a local directory, `file://`, and a
+/// relative path, so the variant a declaration uses proves nothing.
+pub fn declares_a_remote_location(source: &StoreSource) -> bool {
+    match source {
+        StoreSource::Path(_) => false,
+        StoreSource::Git { url, .. } | StoreSource::Blob { url } => is_remote_url(url),
+    }
+}
+
+/// True for `scheme://host/...` with a scheme that is not `file`, and
+/// for the scp form `user@host:path` that git accepts.
+///
+/// Everything else is a location on this machine: an absolute path, a
+/// relative path, a bare directory name, and `file:///...`.
+pub fn is_remote_url(value: &str) -> bool {
+    if let Some((scheme, rest)) = value.split_once("://") {
+        return !scheme.eq_ignore_ascii_case("file")
+            && !scheme.is_empty()
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+            && !rest.is_empty();
+    }
+    // The scp form: user@host:path, with a host that is not a Windows
+    // drive letter and a path that does not start the string.
+    if let Some((before, after)) = value.split_once(':') {
+        if after.starts_with('/') && before.len() == 1 {
+            return false; // C:/... is a path
+        }
+        if let Some((_user, host)) = before.split_once('@') {
+            return !host.is_empty() && !host.contains('/');
+        }
+    }
+    false
+}
+
 impl StoreSource {
     /// The identity of the store this source points at.
     ///
@@ -739,12 +777,18 @@ impl StoreGraph {
                 alias_path.push(decl.alias.clone());
 
                 // A remote store is content somebody else controls. If
-                // it could name a directory on this machine, publishing
+                // it could name a location on this machine, publishing
                 // a store would be enough to pull a reader's private
                 // files into their own closure.
-                if parent_remote && matches!(decl.source, StoreSource::Path(_)) {
+                //
+                // The test is the value, never the key it was written
+                // under. Git clones a local directory as readily as a
+                // URL, so `git: /home/you/private` is the same attack
+                // as `path: /home/you/private` with a different
+                // spelling.
+                if parent_remote && !declares_a_remote_location(&decl.source) {
                     findings.push(format!(
-                        "store '{}' is remote and may not declare a local path; \
+                        "store '{}' is remote and may not declare a location on this machine; \
                          declare an outside dependency by URL",
                         alias_path.join("/")
                     ));
@@ -1007,10 +1051,52 @@ pub fn write_document(path: &Path, contents: &str) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| Error::InvalidStore(format!("{} has no file name", path.display())))?;
-    let temp = parent.join(format!(".{name}.tmp"));
-    std::fs::write(&temp, contents)?;
-    std::fs::rename(&temp, path)?;
+    // Stage under a name nothing else holds, and create it with
+    // O_EXCL. A plain write follows a symlink, so a store that ships
+    // `.{name}.tmp` as a link would turn every edit into a write to
+    // wherever that link points, and the rename would then move the
+    // link over the document. A unique name also keeps two writers on
+    // one store from staging into the same file.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
+
+    let write = (|| -> std::io::Result<()> {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(e) = write {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e.into());
+    }
+    if let Err(e) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+/// True when the text names one document, not a path.
+///
+/// An id becomes a file path when a store joins it onto a document
+/// directory, so it must hold no separator, no parent component, and
+/// no root. A served store takes this text from the network.
+///
+/// One predicate serves every tool. A guard that lives in one of two
+/// sibling tools is a guard that is missing from the other.
+pub fn is_plain_stem(input: &str) -> bool {
+    !input.is_empty()
+        && !input.contains('/')
+        && !input.contains('\\')
+        && input != "."
+        && input != ".."
+        && !input.starts_with('.')
+        && !input.contains('\0')
 }
 
 #[cfg(test)]
@@ -1524,10 +1610,91 @@ mod tests {
             "the private directory must not enter the closure"
         );
         assert!(
-            graph.findings.iter().any(|f| f.contains("may not declare a local path")),
+            graph.findings.iter().any(|f| f.contains("may not declare a location on this machine")),
             "the refusal is reported: {:?}",
             graph.findings
         );
+    }
+
+    #[test]
+    fn a_symlink_at_the_staging_path_cannot_capture_a_write() {
+        let base = std::env::temp_dir().join(format!(
+            "mdstore-staging-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("store")).unwrap();
+        let victim = base.join("victim.txt");
+        std::fs::write(&victim, "untouched").unwrap();
+        let doc = base.join("store").join("note.md");
+        std::fs::write(&doc, "original").unwrap();
+
+        // Every staging name this process could pick, planted as a link.
+        for n in 0..8 {
+            let link = base
+                .join("store")
+                .join(format!(".note.md.{}.{n}.tmp", std::process::id()));
+            let _ = std::os::unix::fs::symlink(&victim, &link);
+        }
+
+        // The write either refuses or stages elsewhere. Either way the
+        // victim keeps its content and the document is never a link.
+        let _ = write_document(&doc, "new content");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        assert!(!std::fs::symlink_metadata(&doc).unwrap().file_type().is_symlink());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_plain_stem_is_one_document_and_never_a_path() {
+        assert!(is_plain_stem("ab12-fix-the-widget"));
+        assert!(is_plain_stem("a3f2"));
+
+        assert!(!is_plain_stem(""));
+        assert!(!is_plain_stem("."));
+        assert!(!is_plain_stem(".."));
+        assert!(!is_plain_stem("../../outside"));
+        assert!(!is_plain_stem("/etc/passwd"));
+        assert!(!is_plain_stem("sub/note"));
+        assert!(!is_plain_stem("sub\\note"));
+        assert!(!is_plain_stem(".hidden"));
+        assert!(!is_plain_stem("with\0nul"));
+    }
+
+    #[test]
+    fn a_remote_location_is_judged_by_the_value_not_the_key() {
+        // What a stranger may declare.
+        assert!(is_remote_url("https://example.com/org/kb"));
+        assert!(is_remote_url("ssh://git@example.com/org/kb"));
+        assert!(is_remote_url("git@example.com:org/kb"));
+        assert!(is_remote_url("s3://bucket/notes"));
+
+        // What a stranger may not: every spelling of this machine.
+        assert!(!is_remote_url("/Users/someone/private-kb"));
+        assert!(!is_remote_url("../private"));
+        assert!(!is_remote_url("private"));
+        assert!(!is_remote_url("file:///Users/someone/private-kb"));
+        assert!(!is_remote_url("FILE:///Users/someone/private-kb"));
+        assert!(!is_remote_url("C:/Users/someone/private-kb"));
+        assert!(!is_remote_url(""));
+
+        // The variant proves nothing; the value decides.
+        assert!(!declares_a_remote_location(&StoreSource::Git {
+            url: "/Users/someone/private-kb".into(),
+            rev: None
+        }));
+        assert!(!declares_a_remote_location(&StoreSource::Blob {
+            url: "../private".into()
+        }));
+        assert!(declares_a_remote_location(&StoreSource::Git {
+            url: "https://example.com/org/kb".into(),
+            rev: None
+        }));
+        assert!(!declares_a_remote_location(&StoreSource::Path(
+            "../anything".into()
+        )));
     }
 
     #[test]

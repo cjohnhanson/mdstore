@@ -17,35 +17,47 @@ pub struct Document<T> {
 /// asks for verbatim frontmatter, and a client compares what a listing
 /// gave against what a fetch gave.
 pub fn split(content: &str) -> Result<(&str, &str)> {
+    let (yaml, body) = split_fences(content)?;
+    Ok((yaml.trim_end(), body))
+}
+
+/// Find the two fences and return the YAML between them and the body after.
+///
+/// The closing fence is a line that holds `---` and nothing else. A
+/// `---` inside a value is text, not a fence: a title such as
+/// `Pooling --- causes stale reads` is a legal scalar, and cutting the
+/// frontmatter there loses every key after it.
+///
+/// One helper serves both `split` and `parse`, so the verbatim text and
+/// the typed frontmatter can never disagree about where a document
+/// ends.
+fn split_fences(content: &str) -> Result<(&str, &str)> {
     let content = content.trim();
-    if !content.starts_with("---") {
-        return Err(Error::MissingFrontmatter);
+    let rest = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+        .or_else(|| (content == "---").then_some(""))
+        .ok_or(Error::MissingFrontmatter)?;
+
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            return Ok((&rest[..offset], rest[offset + line.len()..].trim_start_matches('\n')));
+        }
+        offset += line.len();
     }
-    let after_first = &content[3..].trim_start_matches('\n');
-    let end = after_first.find("---").ok_or(Error::UnclosedFrontmatter)?;
-    Ok((
-        after_first[..end].trim_end(),
-        after_first[end + 3..].trim_start_matches('\n'),
-    ))
+    Err(Error::UnclosedFrontmatter)
 }
 
 /// Parse a `---`-fenced YAML frontmatter document into a typed frontmatter and body.
 pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
-    let content = content.trim();
-    if !content.starts_with("---") {
-        return Err(Error::MissingFrontmatter);
-    }
-
-    let after_first = &content[3..].trim_start_matches('\n');
-    let end = after_first
-        .find("---")
-        .ok_or(Error::UnclosedFrontmatter)?;
-
-    let yaml = &after_first[..end];
+    let (yaml, body) = split_fences(content)?;
     let frontmatter: T = yaml_serde::from_str(yaml)?;
-    let body = after_first[end + 3..].trim().to_string();
 
-    Ok(Document { frontmatter, body })
+    Ok(Document {
+        frontmatter,
+        body: body.trim().to_string(),
+    })
 }
 
 /// Serialize a document back to `---`-fenced YAML frontmatter + body.
@@ -160,5 +172,63 @@ mod tests {
         let parsed: Document<TestFrontmatter> = parse(&serialized).unwrap();
         assert_eq!(parsed.frontmatter.title, "No body");
         assert!(parsed.body.is_empty());
+    }
+
+    #[test]
+    fn a_title_holding_three_dashes_survives_a_round_trip() {
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "Pooling --- causes stale reads".into(),
+                tags: vec!["bug".into()],
+            },
+            body: "The pool reuses sockets.".into(),
+        };
+        let serialized = serialize(&doc).unwrap();
+        let parsed: Document<TestFrontmatter> = parse(&serialized).unwrap();
+        assert_eq!(parsed.frontmatter, doc.frontmatter);
+        assert_eq!(parsed.body, doc.body);
+        let (yaml, body) = split(&serialized).unwrap();
+        assert!(yaml.contains("Pooling --- causes stale reads"));
+        assert_eq!(body.trim(), "The pool reuses sockets.");
+    }
+
+    #[test]
+    fn a_title_that_is_only_three_dashes_survives_a_round_trip() {
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "---".into(),
+                tags: vec![],
+            },
+            body: "body".into(),
+        };
+        let serialized = serialize(&doc).unwrap();
+        let parsed: Document<TestFrontmatter> = parse(&serialized).unwrap();
+        assert_eq!(parsed.frontmatter.title, "---");
+        assert_eq!(parsed.body, "body");
+    }
+
+    #[test]
+    fn a_body_that_starts_with_a_fence_keeps_it() {
+        let raw = "---\ntitle: T\ntags: []\n---\n---\nbody after a rule\n";
+        let parsed: Document<TestFrontmatter> = parse(raw).unwrap();
+        assert_eq!(parsed.frontmatter.title, "T");
+        assert_eq!(parsed.body, "---\nbody after a rule");
+    }
+
+    #[test]
+    fn split_and_parse_agree_on_where_the_frontmatter_ends() {
+        let raw = "---\ntitle: a --- b\ntags: [x]\n---\n\nbody\n";
+        let (yaml, body) = split(raw).unwrap();
+        let parsed: Document<TestFrontmatter> = parse(raw).unwrap();
+        assert_eq!(yaml, "title: a --- b\ntags: [x]");
+        assert_eq!(body.trim(), "body");
+        assert_eq!(parsed.frontmatter.title, "a --- b");
+    }
+
+    #[test]
+    fn an_unclosed_frontmatter_is_an_error() {
+        let raw = "---\ntitle: T\ntags: []\n\nno closing fence\n";
+        let err = parse::<TestFrontmatter>(raw).unwrap_err();
+        assert!(matches!(err, Error::UnclosedFrontmatter), "{err:?}");
     }
 }
