@@ -59,7 +59,7 @@ impl Registry {
             return Ok(Registry::default());
         }
         let text = std::fs::read_to_string(path)?;
-        Ok(serde_yml::from_str(&text)?)
+        Ok(yaml_serde::from_str(&text)?)
     }
 
     /// The local checkout bound to a declared URL.

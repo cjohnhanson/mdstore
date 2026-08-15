@@ -344,7 +344,7 @@ impl StoresConfig {
             return Ok(StoresConfig::default());
         }
         let text = content.read(STORES_FILE)?;
-        let config: StoresConfig = serde_yml::from_str(&text)?;
+        let config: StoresConfig = yaml_serde::from_str(&text)?;
         config.validate()?;
         Ok(config)
     }

@@ -42,7 +42,7 @@ pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
         .ok_or(Error::UnclosedFrontmatter)?;
 
     let yaml = &after_first[..end];
-    let frontmatter: T = serde_yml::from_str(yaml)?;
+    let frontmatter: T = yaml_serde::from_str(yaml)?;
     let body = after_first[end + 3..].trim().to_string();
 
     Ok(Document { frontmatter, body })
@@ -50,11 +50,11 @@ pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
 
 /// Serialize a document back to `---`-fenced YAML frontmatter + body.
 ///
-/// Uses `serde_yml` for frontmatter serialization, producing canonical YAML output.
+/// Uses `yaml_serde` for frontmatter serialization, producing canonical YAML output.
 /// Tools that need specific field ordering or formatting should implement their own
 /// serializer on top of this.
 pub fn serialize<T: Serialize>(doc: &Document<T>) -> Result<String> {
-    let yaml = serde_yml::to_string(&doc.frontmatter)?;
+    let yaml = yaml_serde::to_string(&doc.frontmatter)?;
     let mut out = String::from("---\n");
     out.push_str(&yaml);
     out.push_str("---\n");
