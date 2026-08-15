@@ -16,8 +16,15 @@ use std::process::Command;
 use crate::error::{Error, Result};
 
 /// The cache directory for one blob prefix.
+///
+/// Blob slots sit under their own namespace. Sharing the git namespace
+/// let a blob prefix land in a bare clone's slot, so publishing an
+/// index naming `config` and `packed-refs` overwrote a git store's
+/// internals and broke every consumer of it.
 pub fn cache_dir(url: &str) -> PathBuf {
-    crate::git::cache_dir(url)
+    crate::git::cache_root()
+        .join("blob")
+        .join(crate::git::slot_name(url))
 }
 
 /// The scheme of a blob URL, when it names one.
@@ -79,7 +86,21 @@ pub fn sync(url: &str) -> Result<PathBuf> {
             // store publishes the index that it wants read.
             let index = run("curl", &["-fsSL", &format!("{source}/index.txt")])?;
             for name in index.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                if name.contains("..") || name.starts_with('/') {
+                // The index is written by whoever publishes the store.
+                // An entry names one file under the prefix, never a
+                // path out of it and never a dot-file.
+                let bad = name.starts_with('/')
+                    || name.starts_with('.')
+                    || std::path::Path::new(name).components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir
+                                | std::path::Component::RootDir
+                                | std::path::Component::Prefix(_)
+                        )
+                    })
+                    || name.split('/').any(|part| part.starts_with('.'));
+                if bad {
                     return Err(Error::InvalidStore(format!(
                         "index entry '{name}' leaves the store"
                     )));
@@ -150,5 +171,48 @@ mod tests {
     #[test]
     fn two_prefixes_get_two_caches() {
         assert_ne!(cache_dir("s3://bucket/a"), cache_dir("s3://bucket/b"));
+    }
+
+    #[test]
+    fn a_blob_slot_never_lands_in_a_git_slot() {
+        // Sharing the namespace let a published index name `config`
+        // and `packed-refs` and overwrite a bare clone's internals.
+        let url = "https://example.com/org/kb";
+        assert_ne!(cache_dir(url), crate::git::cache_dir(url));
+        assert!(cache_dir(url).to_string_lossy().contains("/blob/"));
+    }
+
+    #[test]
+    fn an_index_entry_that_leaves_the_store_is_refused() {
+        for bad in ["../escape.md", "/etc/passwd", ".git/config", "a/../../b.md", ".hidden"] {
+            let path = std::path::Path::new(bad);
+            let rejected = bad.starts_with('/')
+                || bad.starts_with('.')
+                || path.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+                || bad.split('/').any(|p| p.starts_with('.'));
+            assert!(rejected, "{bad} must be refused");
+        }
+        for good in ["skills/a.md", "note.md", "deep/nested/file.md"] {
+            let path = std::path::Path::new(good);
+            let rejected = good.starts_with('/')
+                || good.starts_with('.')
+                || path.components().any(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+                || good.split('/').any(|p| p.starts_with('.'));
+            assert!(!rejected, "{good} must be allowed");
+        }
     }
 }

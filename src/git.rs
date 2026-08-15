@@ -26,9 +26,9 @@ pub fn cache_root() -> PathBuf {
     base.join("mdstore").join("stores")
 }
 
-/// The cache directory for one URL. The name holds a readable part and a
-/// hash, so two URLs with the same last segment stay separate.
-pub fn cache_dir(url: &str) -> PathBuf {
+/// The slot name for one URL: a readable part and a hash, so two URLs
+/// with the same last segment stay separate.
+pub fn slot_name(url: &str) -> String {
     let canonical = super::store::canonical_url_for_cache(url);
     let readable: String = canonical
         .rsplit('/')
@@ -38,7 +38,12 @@ pub fn cache_dir(url: &str) -> PathBuf {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(32)
         .collect();
-    cache_root().join(format!("{readable}-{}", short_hash(&canonical)))
+    format!("{readable}-{}", short_hash(&canonical))
+}
+
+/// The cache directory for one URL.
+pub fn cache_dir(url: &str) -> PathBuf {
+    cache_root().join(slot_name(url))
 }
 
 /// A stable short hash. FNV-1a: this names a directory, so it needs to
@@ -83,6 +88,7 @@ pub fn is_cached(url: &str) -> bool {
 pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     let dir = cache_dir(url);
     if dir.join("HEAD").exists() {
+        ensure_slot_matches(&dir, url)?;
         return Ok(dir);
     }
     if let Some(parent) = dir.parent() {
@@ -93,6 +99,27 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
         None,
     )?;
     Ok(dir)
+}
+
+/// Refuse a slot that holds a different repository.
+///
+/// The slot name comes from a canonicalization that treats https, scp,
+/// and a `.git` suffix as one repository. Two URLs that are not the
+/// same repository can still land in one slot, and serving the wrong
+/// content silently is worse than failing.
+fn ensure_slot_matches(dir: &Path, url: &str) -> Result<()> {
+    let Some(existing) = origin_url(dir) else {
+        return Ok(());
+    };
+    let want = super::store::canonical_url_for_cache(url);
+    let have = super::store::canonical_url_for_cache(&existing);
+    if want == have {
+        return Ok(());
+    }
+    Err(Error::InvalidStore(format!(
+        "the cache slot for {url} already holds {existing}; remove {} to re-fetch",
+        dir.display()
+    )))
 }
 
 /// Fetch the current state of every branch.
@@ -189,6 +216,33 @@ mod tests {
             a.file_name().unwrap().to_string_lossy().starts_with("kb-"),
             "the name stays readable"
         );
+    }
+
+    #[test]
+    fn a_slot_holding_another_repository_is_refused() {
+        // Two URLs that are not the same repository can land in one
+        // slot, because the slot name merges https, scp, and .git.
+        let base = std::env::temp_dir().join(format!(
+            "mdstore-slot-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        git(&["init", "--quiet", "-b", "main"], Some(&base)).unwrap();
+        git(
+            &["remote", "add", "origin", "https://example.com/org/other"],
+            Some(&base),
+        )
+        .unwrap();
+
+        let err = ensure_slot_matches(&base, "https://example.com/org/kb")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already holds"), "{err}");
+
+        // The same repository written another way is still a match.
+        assert!(ensure_slot_matches(&base, "git@example.com:org/other.git").is_ok());
     }
 
     #[test]
