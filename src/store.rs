@@ -523,17 +523,22 @@ pub enum StoreContent {
 
 impl StoreContent {
     /// Read a file, by a path relative to the store root.
+    ///
+    /// A store holds content that somebody else may control, so a file
+    /// that is not a regular file is refused rather than followed. A
+    /// git tree needs no such check: it holds objects, not links into
+    /// this machine.
     pub fn read(&self, rel: &str) -> Result<String> {
         match self {
-            StoreContent::Dir(dir) => Ok(std::fs::read_to_string(dir.join(rel))?),
+            StoreContent::Dir(dir) => read_document(&dir.join(rel)),
             StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel),
         }
     }
 
-    /// True when the store holds this file.
+    /// True when the store holds this file as a regular file.
     pub fn exists(&self, rel: &str) -> bool {
         match self {
-            StoreContent::Dir(dir) => dir.join(rel).exists(),
+            StoreContent::Dir(dir) => is_regular_file(&dir.join(rel)),
             StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel).is_ok(),
         }
     }
@@ -1371,6 +1376,23 @@ mod tests {
     }
 
     // -- guards --
+
+    #[test]
+    fn store_content_refuses_a_symlinked_file() {
+        // A consumer that reads through StoreContent must not be able
+        // to follow a link out of the store.
+        let base = tempdir();
+        let store = base.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let outside = base.join("outside.md");
+        write(&outside, "PRIVATE");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, store.join("linked.md")).unwrap();
+
+        let content = StoreContent::Dir(store);
+        assert!(!content.exists("linked.md"), "a link is not a file here");
+        assert!(content.read("linked.md").is_err());
+    }
 
     #[test]
     fn a_symlinked_document_is_not_read() {
