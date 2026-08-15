@@ -209,6 +209,25 @@ fn classify_line(line: &str) -> Result<MarkerLine> {
     Ok(MarkerLine::Text)
 }
 
+/// Every marker in a text, read the way the parser reads them.
+///
+/// A guard that decides whether text may be written must recognize a
+/// marker exactly as the reader will. A guard with its own substring
+/// scan accepts what the reader treats as a marker, which is how text
+/// gets written carrying a claim the writer was supposed to refuse.
+///
+/// This walks whole lines through the same classifier `parse_spans`
+/// uses, so the two can never drift.
+pub fn markers_in(text: &str) -> Result<Vec<Marker>> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let MarkerLine::Open(marker) = classify_line(line)? {
+            out.push(marker);
+        }
+    }
+    Ok(out)
+}
+
 /// Return true if the body ends inside an open (unclosed) span.
 ///
 /// A caller that appends text to a body needs this: text appended after

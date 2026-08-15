@@ -24,12 +24,16 @@ pub fn has_prefix(id: &str) -> bool {
 /// Extract the prefix and slug portions from a prefixed ID.
 /// Returns `None` if the ID has no prefix.
 pub fn extract_prefix(id: &str) -> Option<(&str, &str)> {
-    if id.len() < PREFIX_LEN + 2 {
-        // Need at least "xxxx-y"
+    // Slice on character boundaries, never on a byte offset. A file
+    // name is third-party content: it arrives from a directory listing,
+    // and a dependency store supplies the listing. split_at(4) on a
+    // name whose fourth byte is inside a multi-byte character aborted
+    // the process, so one such file in a dependency crashed every
+    // command that read it.
+    let (Some(candidate), Some(rest)) = (id.get(..PREFIX_LEN), id.get(PREFIX_LEN..)) else {
         return None;
-    }
-    let (candidate, rest) = id.split_at(PREFIX_LEN);
-    if !rest.starts_with('-') {
+    };
+    if !rest.starts_with('-') || rest.len() < 2 {
         return None;
     }
     if !candidate
@@ -160,5 +164,21 @@ mod tests {
         let (p, s) = extract_prefix(&full_id).unwrap();
         assert_eq!(p, "ab12");
         assert_eq!(s, "fix-the-widget");
+    }
+
+    #[test]
+    fn a_multi_byte_stem_is_not_a_prefix_and_does_not_panic() {
+        // A file name arrives from a directory listing, and a
+        // dependency store supplies the listing. Slicing at byte 4
+        // aborted the process.
+        assert_eq!(extract_prefix("abc\u{65e5}x"), None);
+        assert_eq!(extract_prefix("\u{65e5}\u{672c}\u{8a9e}"), None);
+        assert_eq!(extract_prefix("ab\u{65e5}-note"), None);
+        assert!(!has_prefix("abc\u{65e5}x"));
+
+        // The ordinary cases still hold.
+        assert_eq!(extract_prefix("ab12-fix-it"), Some(("ab12", "fix-it")));
+        assert_eq!(extract_prefix("ab12-"), None);
+        assert_eq!(extract_prefix("ab12"), None);
     }
 }
