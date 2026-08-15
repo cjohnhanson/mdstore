@@ -11,7 +11,7 @@ pub mod slug;
 pub mod snapshot;
 pub mod store;
 
-pub use document::Document;
+pub use document::{Document, parse, serialize};
 pub use error::{Error, Result};
 pub use provenance::{Marker, Span};
 pub use snapshot::{DocId, DocumentSource, Snapshot};
