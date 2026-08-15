@@ -464,6 +464,10 @@ pub struct Member {
     pub content: Option<StoreContent>,
     /// Why the member could not be loaded, if it could not.
     pub unavailable: Option<String>,
+    /// True when this member came from a remote source, or from a
+    /// member that did. A remote store is content that somebody else
+    /// controls, so it may not name a directory on this machine.
+    pub remote: bool,
 }
 
 impl Member {
@@ -687,6 +691,7 @@ impl StoreGraph {
             source: StoreSource::Path(root.to_path_buf()),
             content: Some(StoreContent::Dir(root.to_path_buf())),
             unavailable: None,
+            remote: false,
         }];
         let mut configs = vec![root_config];
         let mut findings = Vec::new();
@@ -712,9 +717,26 @@ impl StoreGraph {
             };
             let parent_path = members[cursor].alias_path.clone();
 
+            let parent_remote = members[cursor].remote;
+
             for decl in decls {
                 let mut alias_path = parent_path.clone();
                 alias_path.push(decl.alias.clone());
+
+                // A remote store is content somebody else controls. If
+                // it could name a directory on this machine, publishing
+                // a store would be enough to pull a reader's private
+                // files into their own closure.
+                if parent_remote && matches!(decl.source, StoreSource::Path(_)) {
+                    findings.push(format!(
+                        "store '{}' is remote and may not declare a local path; \
+                         declare an outside dependency by URL",
+                        alias_path.join("/")
+                    ));
+                    continue;
+                }
+                let child_remote = parent_remote
+                    || matches!(decl.source, StoreSource::Git { .. } | StoreSource::Blob { .. });
 
                 let located = locator.locate(&decl.source, &declaring_root);
                 let (content, unavailable) = match located {
@@ -770,6 +792,7 @@ impl StoreGraph {
                     source: decl.source.clone(),
                     content,
                     unavailable,
+                    remote: child_remote,
                 });
                 configs.push(config);
             }
@@ -858,7 +881,18 @@ pub fn document_dir(root: &Path, configured: &str) -> Result<PathBuf> {
             "document directory '{configured}' leaves the store root"
         )));
     }
-    Ok(root.join(rel))
+    let joined = root.join(rel);
+    // The text passing the check is not enough. The directory itself
+    // can be a symlink, and the store is third-party content, so the
+    // resolved location must sit inside the resolved root.
+    if let (Ok(real_root), Ok(real_dir)) = (root.canonicalize(), joined.canonicalize())
+        && !real_dir.starts_with(&real_root)
+    {
+        return Err(Error::InvalidStore(format!(
+            "document directory '{configured}' resolves outside the store root"
+        )));
+    }
+    Ok(joined)
 }
 
 /// List the `.md` files of a store directory, skipping anything that is
@@ -916,6 +950,52 @@ pub fn sync_source(source: &StoreSource) -> Result<()> {
         StoreSource::Git { url, .. } => crate::git::fetch(url),
         StoreSource::Blob { url } => crate::blob::sync(url).map(|_| ()),
     }
+}
+
+/// Read one document, refusing anything that is not a regular file.
+///
+/// A store is third-party content. A `.md` entry can be a symlink to a
+/// file outside the store, or a FIFO that never ends. Reading by path
+/// alone follows the link and blocks on the FIFO, so every reader goes
+/// through this.
+pub fn read_document(path: &Path) -> Result<String> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(Error::InvalidStore(format!(
+            "{} is a symlink; a document is a regular file",
+            path.display()
+        )));
+    }
+    if !meta.is_file() {
+        return Err(Error::InvalidStore(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
+/// True when a path names a regular file, without following a link.
+#[must_use]
+pub fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// Write a document without following a symlink at its path.
+///
+/// A direct write follows a link and overwrites the file it points at.
+/// Writing a temporary file beside the target and renaming over it
+/// replaces the link itself.
+pub fn write_document(path: &Path, contents: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::InvalidStore(format!("{} has no file name", path.display())))?;
+    let temp = parent.join(format!(".{name}.tmp"));
+    std::fs::write(&temp, contents)?;
+    std::fs::rename(&temp, path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1291,6 +1371,132 @@ mod tests {
     }
 
     // -- guards --
+
+    #[test]
+    fn a_symlinked_document_is_not_read() {
+        let dir = tempdir();
+        let secret = dir.join("secret.txt");
+        write(&secret, "PRIVATE");
+        let link = dir.join("note.md");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let err = read_document(&link).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(!is_regular_file(&link));
+    }
+
+    #[test]
+    fn a_regular_document_is_read() {
+        let dir = tempdir();
+        let path = dir.join("note.md");
+        write(&path, "---\ntitle: t\n---\n");
+        assert!(is_regular_file(&path));
+        assert!(read_document(&path).unwrap().contains("title: t"));
+    }
+
+    #[test]
+    fn a_write_replaces_a_symlink_instead_of_its_target() {
+        let dir = tempdir();
+        let target = dir.join("outside.md");
+        write(&target, "ORIGINAL");
+        let link = dir.join("note.md");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_document(&link, "REPLACED").unwrap();
+
+        // The link is gone, and what it pointed at is untouched.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "ORIGINAL");
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "REPLACED");
+        assert!(is_regular_file(&link));
+    }
+
+    #[test]
+    fn a_symlinked_document_directory_is_refused() {
+        // The configured text passes the check, and the directory it
+        // names is a link out of the store.
+        let base = tempdir();
+        let store = base.join("store");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, store.join(".zettel")).unwrap();
+        let err = document_dir(&store, ".zettel").unwrap_err().to_string();
+        assert!(err.contains("outside the store root"), "{err}");
+    }
+
+    #[test]
+    fn a_real_document_directory_is_allowed() {
+        let base = tempdir();
+        let store = base.join("store");
+        std::fs::create_dir_all(store.join(".zettel")).unwrap();
+        assert!(document_dir(&store, ".zettel").is_ok());
+    }
+
+    #[test]
+    fn a_remote_store_may_not_declare_a_local_path() {
+        // Publishing a store would otherwise be enough to pull a
+        // reader's own directories into their closure: the remote store
+        // declares `path: /anything` and the reader loads it.
+        struct GitResolvesToDir(PathBuf);
+        impl SourceLocator for GitResolvesToDir {
+            fn locate(
+                &self,
+                source: &StoreSource,
+                declaring_root: &Path,
+            ) -> std::result::Result<StoreContent, String> {
+                match source {
+                    // Stand in for a fetched clone.
+                    StoreSource::Git { .. } => Ok(StoreContent::Dir(self.0.clone())),
+                    other => LocalPaths.locate(other, declaring_root),
+                }
+            }
+        }
+
+        let base = tempdir();
+        let upstream = base.join("upstream");
+        let private = base.join("private");
+        store_at(&private, "stores: []\n");
+        // The remote store declares the reader's private directory.
+        store_at(
+            &upstream,
+            &format!(
+                "stores:\n  - alias: pwn\n    path: {}\n",
+                private.display()
+            ),
+        );
+        store_at(
+            &base.join("root"),
+            "stores:\n  - alias: kb\n    git: https://example.com/org/kb\n",
+        );
+
+        let graph = StoreGraph::open(
+            &base.join("root"),
+            &GitResolvesToDir(upstream.clone()),
+        )
+        .unwrap();
+
+        let kb = graph
+            .members
+            .iter()
+            .find(|m| m.alias_path == vec!["kb".to_string()])
+            .expect("the remote store is a member");
+        assert!(kb.remote, "a git source marks the member remote");
+
+        assert!(
+            !graph
+                .members
+                .iter()
+                .any(|m| m.alias_path == vec!["kb".to_string(), "pwn".to_string()]),
+            "the private directory must not enter the closure"
+        );
+        assert!(
+            graph.findings.iter().any(|f| f.contains("may not declare a local path")),
+            "the refusal is reported: {:?}",
+            graph.findings
+        );
+    }
 
     #[test]
     fn a_document_dir_may_not_escape_the_store() {
