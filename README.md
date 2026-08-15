@@ -78,7 +78,7 @@ only the stores it declares, and the stores those declare in turn. This
 makes a directed graph, and a cycle is allowed.
 
 ```yaml
-format: 1
+format: 2
 shared: false
 stores:
   - alias: method
