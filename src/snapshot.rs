@@ -92,11 +92,21 @@ impl<S: DocumentSource> Snapshot<S> {
             match &member.content {
                 Some(content) => {
                     let mut member_skipped = Vec::new();
-                    let loaded = source.load(content, &mut member_skipped)?;
-                    for s in member_skipped {
-                        skipped.push(format!("{}: {s}", label(member)));
+                    // One member that cannot be loaded must not take
+                    // down the whole closure. The vantage store keeps
+                    // working, and the failure is reported.
+                    match source.load(content, &mut member_skipped) {
+                        Ok(loaded) => {
+                            for s in member_skipped {
+                                skipped.push(format!("{}: {s}", label(member)));
+                            }
+                            entries.push(loaded);
+                        }
+                        Err(e) => {
+                            skipped.push(format!("{}: {e}", label(member)));
+                            entries.push(Vec::new());
+                        }
                     }
-                    entries.push(loaded);
                 }
                 None => {
                     skipped.push(format!(

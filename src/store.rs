@@ -390,14 +390,18 @@ impl StoresConfig {
         self.stores.iter().map(|d| d.alias.clone()).collect()
     }
 
-    /// Dependencies a shared (git-tracked) store may not declare.
+    /// Dependencies a shared store declares that other clones cannot
+    /// follow.
     ///
     /// A shared store's link targets must be reachable for everyone who
-    /// clones it. A path leaving the repository is reachable only on the
-    /// declaring machine, so it is rejected at resolution rather than
-    /// warned about: an absolute or home-anchored path resolves to a
-    /// *different* directory for every other user, which is worse than
-    /// not resolving.
+    /// clones it. A path leaving the repository is reachable only on
+    /// the declaring machine: an absolute or home-anchored path names a
+    /// different directory for every other user.
+    ///
+    /// This reports; it does not refuse. The declaring machine can
+    /// still resolve such a path, and refusing it there would break the
+    /// author's own store to protect a reader who has not cloned it
+    /// yet. `check` names each one.
     pub fn unshareable(&self, repo_root: &Path) -> Vec<(String, String)> {
         let mut bad = Vec::new();
         if !self.shared {
@@ -607,6 +611,12 @@ impl SourceLocator for LocalPaths {
     ) -> std::result::Result<StoreContent, String> {
         match source {
             StoreSource::Path(p) => {
+                if !p.is_absolute() && declaring_root.as_os_str().is_empty() {
+                    return Err(format!(
+                        "'{}' is relative and the declaring store has no directory",
+                        p.display()
+                    ));
+                }
                 let joined = if p.is_absolute() {
                     p.clone()
                 } else {
