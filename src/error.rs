@@ -7,7 +7,7 @@ pub enum Error {
     UnclosedFrontmatter,
 
     #[error("{0}")]
-    Yaml(#[from] serde_yml::Error),
+    Yaml(#[from] yaml_serde::Error),
 
     #[error("invalid provenance: {0}")]
     InvalidProvenance(String),

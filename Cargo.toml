@@ -13,7 +13,7 @@ categories = ["parser-implementations", "text-processing"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yml = "0.0.12"
+yaml_serde = "0.10"
 thiserror = "2"
 rand = "0.10.0"
 
