@@ -129,7 +129,7 @@ a set of them to one item.
 For stable file names beside human-readable ones:
 
 - `slugify("Fix the Widget!")` returns `"fix-the-widget"`
-- `generate_prefix()` returns a 4-character id such as `"ab12"`
+- `generate_prefix(&existing)` returns a 4-character id such as `"ab12"`, avoiding the ids already in `existing`
 - `extract_prefix("ab12-fix-the-widget")` returns `Some(("ab12", "fix-the-widget"))`
 - `has_prefix("ab12-fix-the-widget")` returns `true`
 
