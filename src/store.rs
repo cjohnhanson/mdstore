@@ -809,6 +809,16 @@ impl StoreGraph {
                     content.as_ref().and_then(|c| c.dir()),
                     &LookupAdapter(locator),
                 );
+                // Two consumers may pin one repository at different
+                // revisions. They are one fetch and two sets of
+                // documents, so the closure holds two members. Keying
+                // on the URL alone made the first pin answer for both,
+                // and a document that exists only at the other pin then
+                // read as a broken link.
+                let id = match content.as_ref() {
+                    Some(StoreContent::GitTree { rev, .. }) => StoreId(format!("{}@{rev}", id.0)),
+                    _ => id,
+                };
 
                 if let Some(existing) = members.iter().position(|m| m.id == id) {
                     // Already in the closure under a nearer alias path,
