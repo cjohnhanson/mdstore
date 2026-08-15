@@ -69,21 +69,38 @@ pub fn sync(url: &str) -> Result<PathBuf> {
 
     match scheme_of(url) {
         Some("s3") => {
+            // --delete so a document the publisher retracted leaves
+            // the cache too.
             run(
                 "aws",
-                &["s3", "sync", "--only-show-errors", &source, &target],
+                &["s3", "sync", "--delete", "--only-show-errors", &source, &target],
             )?;
         }
         Some("gs") => {
             run(
                 "gcloud",
-                &["storage", "rsync", "--recursive", &source, &target],
+                &[
+                    "storage",
+                    "rsync",
+                    "--recursive",
+                    "--delete-unmatched-destination-objects",
+                    &source,
+                    &target,
+                ],
             )?;
         }
         Some("https") => {
             // An index at the prefix lists the documents, one name per
             // line. A plain HTTP prefix has no listing protocol, so the
             // store publishes the index that it wants read.
+            //
+            // The fetch fills a directory beside the slot and renames
+            // it into place, so a retracted document does not survive
+            // in the cache and an interrupted sync leaves nothing.
+            let staging = dir.with_extension(format!("new-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&staging);
+            std::fs::create_dir_all(&staging)?;
+            let dir = staging.clone();
             let index = run("curl", &["-fsSL", &format!("{source}/index.txt")])?;
             for name in index.lines().map(str::trim).filter(|l| !l.is_empty()) {
                 // The index is written by whoever publishes the store.
@@ -112,6 +129,11 @@ pub fn sync(url: &str) -> Result<PathBuf> {
                 }
                 std::fs::write(path, body)?;
             }
+            std::fs::write(dir.join(".mdstore-blob"), url)?;
+            let final_dir = cache_dir(url);
+            let _ = std::fs::remove_dir_all(&final_dir);
+            std::fs::rename(&dir, &final_dir)?;
+            return Ok(final_dir);
         }
         _ => {
             return Err(Error::InvalidStore(format!(

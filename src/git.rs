@@ -78,9 +78,13 @@ fn git(args: &[&str], dir: Option<&Path>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// True when a bare clone for this URL is present.
+/// True when a complete bare clone for this URL is present.
+///
+/// A slot left behind by an interrupted clone holds a HEAD and nothing
+/// usable, so the check asks git whether the slot is a repository.
 pub fn is_cached(url: &str) -> bool {
-    cache_dir(url).join("HEAD").exists()
+    let dir = cache_dir(url);
+    dir.join("HEAD").exists() && git(&["rev-parse", "--git-dir"], Some(&dir)).is_ok()
 }
 
 /// Make the bare clone if it is absent. This is the only operation that
@@ -94,10 +98,25 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    git(
-        &["clone", "--bare", "--quiet", url, &dir.to_string_lossy()],
+    // Clone beside the slot and rename into place. A partial clone is
+    // then invisible, and two clones at once cannot leave a wedged
+    // slot behind.
+    let staging = dir.with_extension(format!("tmp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let result = git(
+        &["clone", "--bare", "--quiet", url, &staging.to_string_lossy()],
         None,
-    )?;
+    );
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    if dir.join("HEAD").exists() {
+        // Another process finished first. Its slot is as good as ours.
+        let _ = std::fs::remove_dir_all(&staging);
+    } else {
+        std::fs::rename(&staging, &dir)?;
+    }
     Ok(dir)
 }
 
@@ -141,8 +160,14 @@ pub fn fetch(url: &str) -> Result<()> {
 /// The commit that a declared revision names. `None` takes the head of
 /// the default branch, which only an explicit fetch advances.
 pub fn resolve_rev(dir: &Path, rev: Option<&str>) -> Result<String> {
-    let target = rev.unwrap_or("HEAD");
-    let out = git(&["rev-parse", target], Some(dir))?;
+    // ^{commit} makes rev-parse fail on a name that does not exist,
+    // rather than echoing it back. Without it a pin nobody can resolve
+    // reads as an empty store instead of an error.
+    let target = match rev {
+        Some(r) => format!("{r}^{{commit}}"),
+        None => "HEAD^{commit}".to_string(),
+    };
+    let out = git(&["rev-parse", "--verify", &target], Some(dir))?;
     Ok(out.trim().to_string())
 }
 
@@ -243,6 +268,33 @@ mod tests {
 
         // The same repository written another way is still a match.
         assert!(ensure_slot_matches(&base, "git@example.com:org/other.git").is_ok());
+    }
+
+    #[test]
+    fn a_revision_that_does_not_exist_is_an_error() {
+        // Without --verify and ^{commit}, rev-parse echoes an unknown
+        // name back, and the pin then reads as an empty store instead
+        // of failing.
+        let base = std::env::temp_dir().join(format!(
+            "mdstore-rev-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("a.md"), "---\ntitle: a\n---\n").unwrap();
+        for args in [
+            vec!["init", "--quiet", "-b", "main"],
+            vec!["add", "-A"],
+            vec!["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "one"],
+        ] {
+            git(&args, Some(&base)).unwrap();
+        }
+        assert!(resolve_rev(&base, None).is_ok());
+        assert!(
+            resolve_rev(&base, Some("no-such-tag")).is_err(),
+            "an unknown revision must fail"
+        );
     }
 
     #[test]
