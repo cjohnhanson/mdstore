@@ -21,7 +21,11 @@ impl Selector {
 }
 
 /// Returns true if the item matches all selectors (AND semantics).
-pub fn matches_all<T>(selectors: &[Selector], item: &T, matcher: impl Fn(&Selector, &T) -> bool) -> bool {
+pub fn matches_all<T>(
+    selectors: &[Selector],
+    item: &T,
+    matcher: impl Fn(&Selector, &T) -> bool,
+) -> bool {
     selectors.iter().all(|s| matcher(s, item))
 }
 

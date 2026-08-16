@@ -515,7 +515,12 @@ mod tests {
             snap.graph
                 .members
                 .iter()
-                .position(|m| m.content.as_ref().and_then(|c| c.dir()).is_some_and(|r| r.ends_with(name)))
+                .position(|m| {
+                    m.content
+                        .as_ref()
+                        .and_then(|c| c.dir())
+                        .is_some_and(|r| r.ends_with(name))
+                })
                 .unwrap()
         };
         let root_doc = DocId {
@@ -550,12 +555,13 @@ mod tests {
         // local ID, and no local document has that ID.
         assert_eq!(snap.dangling.len(), 1);
         assert_eq!(snap.dangling[0].1.to_string(), "nope:target");
-        assert!(snap
-            .forward(DocId {
+        assert!(
+            snap.forward(DocId {
                 member: 0,
                 index: 0
             })
-            .is_empty());
+            .is_empty()
+        );
     }
 
     #[test]

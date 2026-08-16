@@ -1,5 +1,5 @@
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::error::{Error, Result};
 
@@ -42,7 +42,10 @@ fn split_fences(content: &str) -> Result<(&str, &str)> {
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
         if line.trim_end() == "---" {
-            return Ok((&rest[..offset], rest[offset + line.len()..].trim_start_matches('\n')));
+            return Ok((
+                &rest[..offset],
+                rest[offset + line.len()..].trim_start_matches('\n'),
+            ));
         }
         offset += line.len();
     }

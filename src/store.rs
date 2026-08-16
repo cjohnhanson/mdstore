@@ -244,10 +244,7 @@ fn anchored_to_one_machine(declared: &Path) -> Option<&'static str> {
 /// The host is whatever precedes the first `/`, `?` or `#`, minus any
 /// userinfo and port.
 fn host_is_local(authority: &str) -> bool {
-    let authority = authority
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(authority);
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = match authority.rsplit_once(':') {
         Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
@@ -971,13 +968,19 @@ impl StoreGraph {
                     continue;
                 }
                 let child_remote = parent_remote
-                    || matches!(decl.source, StoreSource::Git { .. } | StoreSource::Blob { .. });
+                    || matches!(
+                        decl.source,
+                        StoreSource::Git { .. } | StoreSource::Blob { .. }
+                    );
 
                 let located = locator.locate(&decl.source, &declaring_root);
                 let (content, unavailable) = match located {
                     Ok(c) => (Some(c), None),
                     Err(why) => {
-                        findings.push(format!("store '{}' unavailable: {why}", alias_path.join("/")));
+                        findings.push(format!(
+                            "store '{}' unavailable: {why}",
+                            alias_path.join("/")
+                        ));
                         (None, Some(why))
                     }
                 };
@@ -1350,7 +1353,10 @@ mod tests {
     #[test]
     fn path_form_parses_when_the_head_is_declared() {
         let r = StoreRef::parse("project/shared-kb:b7c1", &aliases(&["project"]));
-        assert_eq!(r.alias, vec!["project".to_string(), "shared-kb".to_string()]);
+        assert_eq!(
+            r.alias,
+            vec!["project".to_string(), "shared-kb".to_string()]
+        );
         assert_eq!(r.id, "b7c1");
     }
 
@@ -1611,7 +1617,10 @@ mod tests {
             &base.join("root"),
             "stores:\n  - alias: dep\n    path: ../dep\n  - alias: kb\n    path: ../root-kb\n",
         );
-        store_at(&base.join("dep"), "stores:\n  - alias: kb\n    path: ../dep-kb\n");
+        store_at(
+            &base.join("dep"),
+            "stores:\n  - alias: kb\n    path: ../dep-kb\n",
+        );
         store_at(&base.join("root-kb"), "stores: []\n");
         store_at(&base.join("dep-kb"), "stores: []\n");
         let graph = StoreGraph::open(&base.join("root"), &LocalPaths).unwrap();
@@ -1627,14 +1636,33 @@ mod tests {
             from_root, from_dep,
             "the same alias names different stores in different configs"
         );
-        assert!(graph.members[from_root].content.as_ref().unwrap().dir().unwrap().ends_with("root-kb"));
-        assert!(graph.members[from_dep].content.as_ref().unwrap().dir().unwrap().ends_with("dep-kb"));
+        assert!(
+            graph.members[from_root]
+                .content
+                .as_ref()
+                .unwrap()
+                .dir()
+                .unwrap()
+                .ends_with("root-kb")
+        );
+        assert!(
+            graph.members[from_dep]
+                .content
+                .as_ref()
+                .unwrap()
+                .dir()
+                .unwrap()
+                .ends_with("dep-kb")
+        );
     }
 
     #[test]
     fn a_missing_dependency_is_reported_not_fatal() {
         let base = tempdir();
-        store_at(&base.join("a"), "stores:\n  - alias: gone\n    path: ../gone\n");
+        store_at(
+            &base.join("a"),
+            "stores:\n  - alias: gone\n    path: ../gone\n",
+        );
         let graph = StoreGraph::open(&base.join("a"), &LocalPaths).unwrap();
         assert_eq!(graph.members.len(), 2);
         assert_eq!(graph.unavailable().len(), 1);
@@ -1761,21 +1789,15 @@ mod tests {
         // The remote store declares the reader's private directory.
         store_at(
             &upstream,
-            &format!(
-                "stores:\n  - alias: pwn\n    path: {}\n",
-                private.display()
-            ),
+            &format!("stores:\n  - alias: pwn\n    path: {}\n", private.display()),
         );
         store_at(
             &base.join("root"),
             "stores:\n  - alias: kb\n    git: https://example.com/org/kb\n",
         );
 
-        let graph = StoreGraph::open(
-            &base.join("root"),
-            &GitResolvesToDir(upstream.clone()),
-        )
-        .unwrap();
+        let graph =
+            StoreGraph::open(&base.join("root"), &GitResolvesToDir(upstream.clone())).unwrap();
 
         let kb = graph
             .members
@@ -1792,7 +1814,10 @@ mod tests {
             "the private directory must not enter the closure"
         );
         assert!(
-            graph.findings.iter().any(|f| f.contains("may not declare a location on this machine")),
+            graph
+                .findings
+                .iter()
+                .any(|f| f.contains("may not declare a location on this machine")),
             "the refusal is reported: {:?}",
             graph.findings
         );
@@ -1824,7 +1849,12 @@ mod tests {
         // victim keeps its content and the document is never a link.
         let _ = write_document(&doc, "new content");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
-        assert!(!std::fs::symlink_metadata(&doc).unwrap().file_type().is_symlink());
+        assert!(
+            !std::fs::symlink_metadata(&doc)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

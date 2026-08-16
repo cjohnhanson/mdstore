@@ -34,12 +34,16 @@ impl Marker {
             None => (head, None),
         };
         if origin.is_empty() {
-            return Err(Error::InvalidProvenance(format!("empty origin in '{spec}'")));
+            return Err(Error::InvalidProvenance(format!(
+                "empty origin in '{spec}'"
+            )));
         }
         if let Some(q) = &qualifier
             && q.is_empty()
         {
-            return Err(Error::InvalidProvenance(format!("empty qualifier in '{spec}'")));
+            return Err(Error::InvalidProvenance(format!(
+                "empty qualifier in '{spec}'"
+            )));
         }
         let mut attrs = Vec::new();
         for token in iter {
@@ -47,7 +51,9 @@ impl Marker {
                 Error::InvalidProvenance(format!("expected key=value, got '{token}' in '{spec}'"))
             })?;
             if key.is_empty() {
-                return Err(Error::InvalidProvenance(format!("empty attribute key in '{spec}'")));
+                return Err(Error::InvalidProvenance(format!(
+                    "empty attribute key in '{spec}'"
+                )));
             }
             attrs.push((key.to_string(), value.to_string()));
         }
@@ -111,7 +117,9 @@ fn tokenize(spec: &str) -> Result<Vec<String>> {
         }
     }
     if in_quotes {
-        return Err(Error::InvalidProvenance(format!("unclosed quote in '{spec}'")));
+        return Err(Error::InvalidProvenance(format!(
+            "unclosed quote in '{spec}'"
+        )));
     }
     if !current.is_empty() {
         tokens.push(current);
@@ -294,7 +302,13 @@ mod tests {
         let body = "before\n<!-- prov agent:inference -->\nguess\n<!-- /prov -->\nafter";
         let spans = parse_spans(body).unwrap();
         assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0], Span { marker: None, text: "before".into() });
+        assert_eq!(
+            spans[0],
+            Span {
+                marker: None,
+                text: "before".into()
+            }
+        );
         assert_eq!(
             spans[1],
             Span {
@@ -302,7 +316,13 @@ mod tests {
                 text: "guess".into()
             }
         );
-        assert_eq!(spans[2], Span { marker: None, text: "after".into() });
+        assert_eq!(
+            spans[2],
+            Span {
+                marker: None,
+                text: "after".into()
+            }
+        );
     }
 
     #[test]
@@ -406,7 +426,10 @@ mod tests {
     #[test]
     fn quoted_attr_value_keeps_spaces() {
         let m = marker("citation:ddia title=\"Designing Data-Intensive Applications\"");
-        assert_eq!(m.attr("title"), Some("Designing Data-Intensive Applications"));
+        assert_eq!(
+            m.attr("title"),
+            Some("Designing Data-Intensive Applications")
+        );
     }
 
     #[test]
@@ -453,7 +476,13 @@ mod tests {
         let body = "<!-- prov agent:summary -->\none\n<!-- /prov -->\n\n<!-- prov human -->\ntwo\n<!-- /prov -->";
         let spans = parse_spans(body).unwrap();
         assert_eq!(spans.len(), 3, "the blank separator is its own span");
-        assert_eq!(spans[1], Span { marker: None, text: String::new() });
+        assert_eq!(
+            spans[1],
+            Span {
+                marker: None,
+                text: String::new()
+            }
+        );
         assert_eq!(render_spans(&spans), body);
     }
 
@@ -470,7 +499,10 @@ mod tests {
     fn render_normalizes_an_unclosed_span() {
         let spans = parse_spans("<!-- prov agent:summary -->\ntail").unwrap();
         let rendered = render_spans(&spans);
-        assert_eq!(rendered, "<!-- prov agent:summary -->\ntail\n<!-- /prov -->");
+        assert_eq!(
+            rendered,
+            "<!-- prov agent:summary -->\ntail\n<!-- /prov -->"
+        );
     }
 
     #[test]
