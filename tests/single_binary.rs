@@ -34,12 +34,21 @@ fn no_source_file_spawns_a_named_program() {
                     }
                     for b in banned {
                         if line.contains(b) {
-                            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                            offenders.push(format!(
+                                "{}:{}: {}",
+                                path.display(),
+                                n + 1,
+                                line.trim()
+                            ));
                         }
                     }
                 }
             }
         }
     }
-    assert!(offenders.is_empty(), "spawns of a named program:\n{}", offenders.join("\n"));
+    assert!(
+        offenders.is_empty(),
+        "spawns of a named program:\n{}",
+        offenders.join("\n")
+    );
 }
