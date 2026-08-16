@@ -67,3 +67,7 @@ Runtime-derived lines in the prime; primes as gaff handlers (exact-cwd trust, 50
 ## Not verified
 
 Whether a Claude Code SessionStart hook's stdout is injected on compaction as well as start; whether codex has a command hook.
+
+## Scratch Notes
+
+2026-08-16: contract built in all four tools (almanac 9447394, zettel 388cf88, gaff 51390cc, tisket 793d8ca), each with shape test + command-table walk. Sizes: almanac 605, zettel 692, gaff 591, tisket 696 bytes. Assembly in co.d 2a0c7cd: build-time capture as prime-<tool>.md user sections, cap 8192, ecosystem.md policy-only. Not built: the co.d check of the user layer's SessionStart byte total (verified by hand instead).
