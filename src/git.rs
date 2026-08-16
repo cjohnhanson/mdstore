@@ -73,6 +73,27 @@ enum Source {
     Ssh,
 }
 
+/// The location on this machine that a declared source names, if it
+/// names one.
+///
+/// This asks the parser that performs the fetch, so the answer is what
+/// gix will actually read. A guard that decides this any other way
+/// decides a different question: `strip_prefix("file://")` misses
+/// `FILE://` and misreads `file://localhost/abs/path`, both of which
+/// gix resolves to `/abs/path`.
+///
+/// `None` means the source names no location on this machine.
+#[must_use]
+pub fn local_path(url: &str) -> Option<PathBuf> {
+    match classify(url) {
+        Ok(Source::Local(p)) => Some(p),
+        // A source that does not parse names nothing this machine can
+        // reach, and a caller that must decide safety treats an
+        // unparseable declaration as unresolved rather than as remote.
+        Ok(_) | Err(_) => None,
+    }
+}
+
 fn classify(url: &str) -> Result<Source> {
     let parsed = gix::url::parse(gix::bstr::BStr::new(url))
         .map_err(|e| Error::InvalidStore(format!("{url}: {e}")))?;

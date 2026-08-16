@@ -231,14 +231,22 @@ fn resolves_outside(repo_root: &Path, declared: &Path) -> bool {
 /// readily as a URL, so `git: /home/you/private` names this machine
 /// exactly as `path: /home/you/private` does. Every guard about
 /// locations must therefore ask this, not `matches!(source, Path(_))`.
-fn on_machine_location(source: &StoreSource) -> Option<PathBuf> {
+pub(crate) fn on_machine_location(source: &StoreSource) -> Option<PathBuf> {
     match source {
         StoreSource::Path(p) => Some(p.clone()),
-        StoreSource::Git { url, .. } | StoreSource::Blob { url } => {
-            if is_remote_url(url) {
+        // Ask the parser that performs the fetch. Stripping a literal
+        // "file://" prefix answered a different question: it missed
+        // "FILE://", and it read "file://localhost/abs/private" as the
+        // relative path "localhost/abs/private" while gix resolves it
+        // to "/abs/private" and clones the private repository.
+        StoreSource::Git { url, .. } => crate::git::local_path(url),
+        // Blob has its own scheme set, so a value that is not one of
+        // those names a location here.
+        StoreSource::Blob { url } => {
+            if crate::blob::scheme_of(url).is_some() {
                 return None;
             }
-            Some(PathBuf::from(url.strip_prefix("file://").unwrap_or(url)))
+            crate::git::local_path(url).or_else(|| Some(PathBuf::from(url)))
         }
     }
 }
@@ -273,7 +281,9 @@ fn host_is_local(authority: &str) -> bool {
         return false;
     };
     match parsed.host() {
-        Some(url::Host::Domain(name)) => name.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Domain(name)) => {
+            name.trim_end_matches('.').eq_ignore_ascii_case("localhost")
+        }
         Some(url::Host::Ipv4(v4)) => address_is_local(std::net::IpAddr::V4(v4)),
         Some(url::Host::Ipv6(v6)) => match v6.to_ipv4_mapped() {
             // `[::ffff:127.0.0.1]` reaches the same service as
@@ -603,14 +613,13 @@ impl StoresConfig {
             // A git or blob declaration whose value names this machine
             // is a local path wearing another key, and every clone of
             // this store would follow it somewhere else or nowhere.
-            let p = match &decl.source {
-                StoreSource::Path(p) => p.clone(),
-                StoreSource::Git { url, .. } | StoreSource::Blob { url } => {
-                    if is_remote_url(url) {
-                        continue;
-                    }
-                    PathBuf::from(url.strip_prefix("file://").unwrap_or(url))
-                }
+            //
+            // One resolver answers here and at the walk's own guard. A
+            // second copy of this reasoning is how the two came to
+            // disagree about `FILE://` and about a file URL with a
+            // host component.
+            let Some(p) = on_machine_location(&decl.source) else {
+                continue;
             };
             let p = &p;
             let reason = if p.is_absolute() {
@@ -1081,10 +1090,22 @@ impl StoreGraph {
                 // revisions, whether they pin it or check it out
                 // twice. They are one fetch and two sets of documents,
                 // so the closure holds two members.
+                //
+                // A git source that names this machine has no store
+                // directory, because its content is read from the
+                // clone's objects. Its resolved location is still the
+                // thing that identifies it, so pass that: without it
+                // the identity fell back to the declared text, and two
+                // stores each declaring the same relative path became
+                // one member.
+                let located_at = content
+                    .as_ref()
+                    .and_then(|c| c.dir().map(Path::to_path_buf))
+                    .or_else(|| on_machine_location(&decl.source));
                 let id = member_identity(
                     &decl.source,
                     content.as_ref(),
-                    content.as_ref().and_then(|c| c.dir()),
+                    located_at.as_deref(),
                     &LookupAdapter(locator),
                 );
 
@@ -1856,6 +1877,53 @@ mod tests {
     }
 
     #[test]
+    fn a_vendored_dependency_may_not_name_this_machine_under_any_key() {
+        // Drives the walk, not the helpers. The helper-only version of
+        // this test passed while the guard at the call site still
+        // narrowed to StoreSource::Path, so the defect it describes
+        // was reported fixed and was not.
+        //
+        // A vendored third-party store is a plain local directory. Its
+        // own declarations must not name a location the reader chose
+        // for themselves.
+        let base = tempdir();
+        let private = base.join("private");
+        store_at(&private, "stores: []\n");
+        let abs = private.display().to_string();
+
+        for (label, decl) in [
+            ("path", format!("path: {abs}")),
+            ("git-abs", format!("git: {abs}")),
+            ("git-file-url", format!("git: file://{abs}")),
+            ("git-file-url-upper", format!("git: FILE://{abs}")),
+            ("git-file-url-host", format!("git: file://localhost{abs}")),
+            ("blob-abs", format!("blob: {abs}")),
+        ] {
+            let root = base.join(format!("root-{label}"));
+            let vendored = base.join(format!("vendored-{label}"));
+            store_at(&vendored, &format!("stores:\n  - alias: pwn\n    {decl}\n"));
+            store_at(
+                &root,
+                &format!("stores:\n  - alias: dep\n    path: ../vendored-{label}\n"),
+            );
+
+            let graph = StoreGraph::open(&root, &LocalPaths).unwrap();
+            assert!(
+                !graph
+                    .members
+                    .iter()
+                    .any(|m| m.alias_path == vec!["dep".to_string(), "pwn".to_string()]),
+                "{label}: the private store entered the closure"
+            );
+            assert!(
+                graph.findings.iter().any(|f| f.contains("dep/pwn")),
+                "{label}: no finding reported; findings were {:?}",
+                graph.findings
+            );
+        }
+    }
+
+    #[test]
     fn a_remote_store_may_not_declare_a_local_path() {
         // Publishing a store would otherwise be enough to pull a
         // reader's own directories into their closure: the remote store
@@ -2097,14 +2165,18 @@ mod tests {
         }
 
         // A relative path travels with a copy of the working area.
-        assert!(on_machine_location(&StoreSource::Path("../sibling".into()))
-            .is_some_and(|p| anchored_to_one_machine(&p).is_none()));
+        assert!(
+            on_machine_location(&StoreSource::Path("../sibling".into()))
+                .is_some_and(|p| anchored_to_one_machine(&p).is_none())
+        );
         // A real URL names no location here.
-        assert!(on_machine_location(&StoreSource::Git {
-            url: "https://example.com/org/kb".into(),
-            rev: None
-        })
-        .is_none());
+        assert!(
+            on_machine_location(&StoreSource::Git {
+                url: "https://example.com/org/kb".into(),
+                rev: None
+            })
+            .is_none()
+        );
     }
 
     #[test]

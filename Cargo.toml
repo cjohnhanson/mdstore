@@ -26,10 +26,18 @@ gix = { version = "0.86", default-features = false, features = [
 # The https blob store: an index and its documents over plain GET. The
 # same reqwest gix uses, so one HTTP stack.
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
+
+# The passwd database, for the home directory that anchors the user
+# config path. $HOME is repo-settable (direnv, mise), and the user
+# config names where writes land, so it never comes from the
+# environment.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["user"] }
 yaml_serde = "0.10"
 thiserror = "2"
 url = "2"
 rand = "0.10.0"
+cap-std = "4.0.2"
 
 [features]
 default = []
