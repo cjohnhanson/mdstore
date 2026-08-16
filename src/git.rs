@@ -78,7 +78,10 @@ fn classify(url: &str) -> Result<Source> {
         .map_err(|e| Error::InvalidStore(format!("{url}: {e}")))?;
     Ok(match parsed.scheme {
         gix::url::Scheme::File => {
-            Source::Local(gix::path::from_bstr(parsed.path.as_bstr()).into_owned())
+            // Absolute, so a relative declaration names one repository
+            // whatever the working directory is.
+            let p = gix::path::from_bstr(parsed.path.as_bstr()).into_owned();
+            Source::Local(std::path::absolute(&p).unwrap_or(p))
         }
         gix::url::Scheme::Ssh => Source::Ssh,
         gix::url::Scheme::Http | gix::url::Scheme::Https | gix::url::Scheme::Git => {
@@ -504,6 +507,15 @@ impl Copier<'_> {
         if self.seen.contains(&id) {
             return Ok(());
         }
+        // Subtrees and blobs are written before their tree, so a tree
+        // the destination holds implies its whole closure is there.
+        {
+            use gix::objs::Exists as _;
+            if self.dst.objects.exists(&id) {
+                self.seen.insert(id);
+                return Ok(());
+            }
+        }
         let tree = self
             .src
             .find_tree(id)
@@ -689,6 +701,13 @@ fn credentials_from_store_file(want: &gix::Url) -> Option<(String, String)> {
                 continue;
             };
             if entry.scheme != want.scheme || entry.host() != Some(want_host) {
+                continue;
+            }
+            // git-credential-store matches the username too, when the
+            // URL carries one.
+            if let Some(u) = want.user()
+                && entry.user() != Some(u)
+            {
                 continue;
             }
             if let (Some(u), Some(p)) = (entry.user(), entry.password()) {
