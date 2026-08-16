@@ -78,8 +78,8 @@ fn classify(url: &str) -> Result<Source> {
         .map_err(|e| Error::InvalidStore(format!("{url}: {e}")))?;
     Ok(match parsed.scheme {
         gix::url::Scheme::File => {
-            // Absolute, so a relative declaration names one repository
-            // whatever the working directory is.
+            // A relative path resolves against the process cwd, as the
+            // git CLI clone did. The slot is keyed by the declared text.
             let p = gix::path::from_bstr(parsed.path.as_bstr()).into_owned();
             Source::Local(std::path::absolute(&p).unwrap_or(p))
         }
@@ -204,11 +204,9 @@ fn clone_network(remote: gix::Url, staging: &Path) -> Result<()> {
     // A mirror layout, as `git clone --bare` makes: heads land in
     // refs/heads/*. gix adds its own remotes/origin refspec before this
     // closure runs, so the refspec is replaced, not appended.
-    .configure_remote(|r| {
-        Ok(
-            r.with_refspecs([HEADS_MIRROR], gix::remote::Direction::Fetch)?
-                .with_fetch_tags(gix::remote::fetch::Tags::All),
-        )
+    .configure_remote(|mut r| {
+        r.replace_refspecs([HEADS_MIRROR], gix::remote::Direction::Fetch)?;
+        Ok(r.with_fetch_tags(gix::remote::fetch::Tags::All))
     })
     .configure_connection(|conn| {
         conn.set_credentials(credential_fn());
@@ -217,6 +215,13 @@ fn clone_network(remote: gix::Url, staging: &Path) -> Result<()> {
     prepare
         .fetch_only(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| gix_err("clone", e))?;
+    ensure_refs_dir(staging)
+}
+
+/// gix writes fetched refs packed and then removes the emptied `refs/`
+/// tree, and a repository without `refs/` does not open. Put it back.
+fn ensure_refs_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir.join("refs"))?;
     Ok(())
 }
 
@@ -282,8 +287,29 @@ fn fetch_network(dir: &Path, url: gix::Url) -> Result<Vec<(gix::ObjectId, String
             deletes.push(delete_edit(r.name().to_owned()));
         }
     }
+    // HEAD follows the remote's HEAD when the remote says where it
+    // points and that head was fetched. `git fetch` left HEAD alone; a
+    // mirror whose upstream renamed its default branch would then read
+    // a pruned ref forever.
+    let remote_head = outcome.ref_map.remote_refs.iter().find_map(|r| match r {
+        gix::protocol::handshake::Ref::Symbolic {
+            full_ref_name,
+            target,
+            ..
+        } if full_ref_name == "HEAD" => Some(target.clone()),
+        _ => None,
+    });
+    if let Some(target) = remote_head
+        && keep.contains(&target)
+        && let Ok(name) = gix::refs::FullName::try_from(target)
+    {
+        let head: gix::refs::FullName = "HEAD".try_into().expect("HEAD is a valid ref name");
+        repo.edit_reference(update_edit(head, gix::refs::Target::Symbolic(name)))
+            .map_err(|e| gix_err("head", e))?;
+    }
     repo.edit_references(deletes)
         .map_err(|e| gix_err("prune", e))?;
+    ensure_refs_dir(dir)?;
     Ok(heads)
 }
 
@@ -365,6 +391,7 @@ fn mirror_local(
     let mut tags: Vec<(gix::refs::FullName, gix::ObjectId)> = Vec::new();
     let mut tips: Vec<gix::ObjectId> = Vec::new();
     let mut tag_objects: Vec<gix::ObjectId> = Vec::new();
+    let mut tag_trees: Vec<gix::ObjectId> = Vec::new();
     let refs = src.references().map_err(|e| gix_err("mirror", e))?;
     for r in refs
         .prefixed("refs/heads/")
@@ -389,7 +416,14 @@ fn mirror_local(
             tag_objects.push(direct);
         }
         tags.push((r.name().to_owned(), direct));
-        tips.push(peeled);
+        // A tag may point at a tree or a blob. Those are copied as
+        // objects; only a commit is a walk tip.
+        match src.find_header(peeled).map(|h| h.kind()) {
+            Ok(gix::objs::Kind::Commit) => tips.push(peeled),
+            Ok(gix::objs::Kind::Tree) => tag_trees.push(peeled),
+            Ok(_) => tag_objects.push(peeled),
+            Err(e) => return Err(gix_err("mirror", e)),
+        }
     }
     let detached_head = match src.head_name() {
         Ok(None) => src.head_id().ok().map(|id| id.detach()),
@@ -411,6 +445,9 @@ fn mirror_local(
         let tree_id = commit.tree_id().map_err(|e| gix_err("mirror", e))?.detach();
         copier.tree(tree_id)?;
         copier.copy(info.id)?;
+    }
+    for id in tag_trees {
+        copier.tree(id)?;
     }
     for id in tag_objects {
         copier.copy(id)?;
@@ -998,6 +1035,15 @@ mod tests {
             gix::refs::transaction::PreviousValue::MustNotExist,
         )
         .unwrap();
+        // Tags on a blob and on a tree: copied as objects, never walked.
+        let blob_id = repo.write_blob(b"just bytes\n").unwrap().detach();
+        let blob_tag: gix::refs::FullName = "refs/tags/blob-tag".try_into().unwrap();
+        repo.edit_reference(update_edit(blob_tag, gix::refs::Target::Object(blob_id)))
+            .unwrap();
+        let tree_id = repo.find_commit(c1).unwrap().tree_id().unwrap().detach();
+        let tree_tag: gix::refs::FullName = "refs/tags/tree-tag".try_into().unwrap();
+        repo.edit_reference(update_edit(tree_tag, gix::refs::Target::Object(tree_id)))
+            .unwrap();
         // A commit on no branch, with HEAD detached at it.
         let head: gix::refs::FullName = "HEAD".try_into().unwrap();
         repo.edit_reference(update_edit(head.clone(), gix::refs::Target::Object(c2)))
@@ -1028,6 +1074,20 @@ mod tests {
             "HEAD follows the detached source"
         );
         assert_eq!(show(&dir, "HEAD", "n/a.md").unwrap(), "three\n");
+        let slot = open_isolated(&dir).unwrap();
+        assert!(
+            slot.find_object(blob_id).is_ok(),
+            "a blob tag's object is in the slot"
+        );
+        assert!(
+            slot.find_object(tree_id).is_ok(),
+            "a tree tag's object is in the slot"
+        );
+        assert!(slot.find_reference("refs/tags/blob-tag").is_ok());
+        assert!(
+            resolve_rev(&dir, Some("blob-tag")).is_err(),
+            "a blob tag is not a commit"
+        );
         // A later fetch keeps the same properties.
         fetch(&url).unwrap();
         assert_eq!(resolve_rev(&dir, Some("v2")).unwrap(), c2.to_string());
@@ -1068,12 +1128,25 @@ mod tests {
     fn network_clone_and_fetch_over_https_run_in_process() {
         let _env = crate::env_lock();
         let base = scratch("net");
-        let url = "https://github.com/cjohnhanson/gaff";
+        // A public repository with tags, so packed refs and Tags::All
+        // are both exercised.
+        let url = "https://github.com/BurntSushi/termcolor";
         unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
         let dir = ensure_clone(url).unwrap();
-        assert!(is_cached(url));
+        assert!(
+            is_cached(url),
+            "the slot opens after a clone that packed its refs"
+        );
+        assert!(
+            dir.join("refs").is_dir(),
+            "refs/ exists even when every ref is packed"
+        );
         let head = resolve_rev(&dir, None).unwrap();
-        assert!(resolve_rev(&dir, Some("main")).is_ok());
+        assert!(resolve_rev(&dir, Some("master")).is_ok());
+        assert!(
+            resolve_rev(&dir, Some("1.0.0")).is_ok(),
+            "a tag pin resolves"
+        );
         assert!(
             list_tree(&dir, &head, "src")
                 .unwrap()
@@ -1085,6 +1158,10 @@ mod tests {
                 .unwrap()
                 .contains("[package]")
         );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("HEAD")).unwrap().trim(),
+            "ref: refs/heads/master"
+        );
         // A slot config the CLI would leave: url only. Fetch still works.
         std::fs::write(
             dir.join("config"),
@@ -1094,6 +1171,15 @@ mod tests {
         fetch(url).unwrap();
         assert_eq!(resolve_rev(&dir, None).unwrap(), head);
         assert!(dir.join("FETCH_HEAD").exists());
+        assert!(is_cached(url), "the slot opens after a fetch too");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("HEAD")).unwrap().trim(),
+            "ref: refs/heads/master"
+        );
+        assert!(
+            resolve_rev(&dir, Some("1.0.0")).is_ok(),
+            "tags survive a fetch"
+        );
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 }
