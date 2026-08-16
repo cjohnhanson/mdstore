@@ -111,8 +111,13 @@ A member store can be local or remote:
 - `git` — a bare clone in a per-URL cache slot, read at each consumer's
   declared rev through git objects. Two consumers that pin different
   revisions share one fetch, and neither overwrites the other. Only an
-  explicit sync reaches the network.
-- `blob` — object storage, synced into a cache directory.
+  explicit sync reaches the network. All of it runs in-process on gix:
+  https and git:// over gix's own transports, and a local repository by
+  reading its object database. No git process runs. An ssh URL is
+  refused, because gix would spawn ssh for it; declare https.
+- `blob` — an https prefix that publishes an `index.txt`, synced into a
+  cache directory by plain GET. No vendor CLI runs; `s3://` and `gs://`
+  are refused.
 
 The `registry` module holds local overrides. An override changes where
 a dependency resolves. It never changes what a store declares.

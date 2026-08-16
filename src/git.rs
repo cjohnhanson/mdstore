@@ -1,4 +1,5 @@
-//! A read-only git cache for remote stores.
+//! A read-only git cache for remote stores, on gix. Nothing here
+//! spawns a process.
 //!
 //! The cache holds one bare clone for each URL. Documents are read from
 //! git objects at the revision that each consumer declares. A bare clone
@@ -8,7 +9,9 @@
 //! of what every other consumer reads.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::atomic::AtomicBool;
+
+use gix::bstr::ByteSlice as _;
 
 use crate::error::{Error, Result};
 
@@ -57,62 +60,93 @@ fn short_hash(s: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn git(args: &[&str], dir: Option<&Path>) -> Result<String> {
-    let mut cmd = Command::new("git");
-    if let Some(d) = dir {
-        cmd.arg("-C").arg(d);
-    }
-    cmd.args(args);
-    // A prompt would block a command that the user expects to finish.
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    let out = cmd
-        .output()
-        .map_err(|e| Error::InvalidStore(format!("cannot run git: {e}")))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(Error::InvalidStore(format!(
-            "git {}: {stderr}",
-            args.join(" ")
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+/// Where a declared URL leads, and whether gix can reach it in-process.
+enum Source {
+    /// A repository on this machine: `file://…`, an absolute path, or a
+    /// relative path. gix's file transport would spawn `git-upload-pack`,
+    /// so the slot is filled by reading the source repository directly.
+    Local(PathBuf),
+    /// http, https, git://. gix speaks these in-process.
+    Network(gix::Url),
+    /// ssh:// or scp form. gix has no in-process ssh transport; it would
+    /// spawn `ssh`. Refused, with the fix in the message.
+    Ssh,
+}
+
+fn classify(url: &str) -> Result<Source> {
+    let parsed = gix::url::parse(gix::bstr::BStr::new(url))
+        .map_err(|e| Error::InvalidStore(format!("{url}: {e}")))?;
+    Ok(match parsed.scheme {
+        gix::url::Scheme::File => {
+            Source::Local(gix::path::from_bstr(parsed.path.as_bstr()).into_owned())
+        }
+        gix::url::Scheme::Ssh => Source::Ssh,
+        gix::url::Scheme::Http | gix::url::Scheme::Https | gix::url::Scheme::Git => {
+            Source::Network(parsed)
+        }
+        gix::url::Scheme::Ext(ref s) => {
+            return Err(Error::InvalidStore(format!(
+                "{url}: unsupported scheme {s}"
+            )));
+        }
+    })
+}
+
+fn refuse_ssh(url: &str) -> Error {
+    Error::InvalidStore(format!(
+        "{url}: an ssh transport needs an ssh process, and mdstore spawns none. \
+         Declare the store with an https URL; the cache slot is the same for both forms."
+    ))
+}
+
+fn open_isolated(dir: &Path) -> Result<gix::Repository> {
+    gix::open_opts(dir, gix::open::Options::isolated())
+        .map_err(|e| Error::InvalidStore(format!("{}: {e}", dir.display())))
+}
+
+fn gix_err(context: &str, e: impl std::fmt::Display) -> Error {
+    Error::InvalidStore(format!("{context}: {e}"))
 }
 
 /// True when a complete bare clone for this URL is present.
 ///
 /// A slot left behind by an interrupted clone holds a HEAD and nothing
-/// usable, so the check asks git whether the slot is a repository.
+/// usable, so the check opens the slot as a repository.
 pub fn is_cached(url: &str) -> bool {
     let dir = cache_dir(url);
-    dir.join("HEAD").exists() && git(&["rev-parse", "--git-dir"], Some(&dir)).is_ok()
+    dir.join("HEAD").exists() && open_isolated(&dir).is_ok()
 }
 
-/// Make the bare clone if it is absent. This is the only operation that
-/// reaches the network without an explicit `sync`.
+/// Make sure a bare clone for `url` is present, and return its directory.
+///
+/// The clone lands in a staging directory beside the slot and is renamed
+/// into place, so a slot is either whole or absent. If two processes race
+/// to fill one slot, the second finds it present and drops its own copy.
 pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     let dir = cache_dir(url);
     if dir.join("HEAD").exists() {
         ensure_slot_matches(&dir, url)?;
         return Ok(dir);
     }
+    let source = classify(url)?;
+    if let Source::Ssh = source {
+        return Err(refuse_ssh(url));
+    }
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Clone beside the slot and rename into place. A partial clone is
-    // then invisible, and two clones at once cannot leave a wedged
-    // slot behind.
     let staging = dir.with_extension(format!("tmp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    let result = git(
-        &["clone", "--bare", "--quiet", url, &staging.to_string_lossy()],
-        None,
-    );
+    let result = match source {
+        Source::Local(path) => mirror_local(&path, &staging, url, MirrorMode::Create).map(|_| ()),
+        Source::Network(remote) => clone_network(remote, &staging),
+        Source::Ssh => unreachable!("refused above"),
+    };
     if let Err(e) = result {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
     if dir.join("HEAD").exists() {
-        // Another process finished first. Its slot is as good as ours.
         let _ = std::fs::remove_dir_all(&staging);
     } else {
         std::fs::rename(&staging, &dir)?;
@@ -120,12 +154,10 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Refuse a slot that holds a different repository.
-///
-/// The slot name comes from a canonicalization that treats https, scp,
-/// and a `.git` suffix as one repository. Two URLs that are not the
-/// same repository can still land in one slot, and serving the wrong
-/// content silently is worse than failing.
+/// The slot name merges https, scp, and `.git` spellings of one repository.
+/// Two different repositories can still share a slot name only through a
+/// hash collision, but a slot cloned from one URL must never serve
+/// another, so the recorded origin is checked against the request.
 fn ensure_slot_matches(dir: &Path, url: &str) -> Result<()> {
     let Some(existing) = origin_url(dir) else {
         return Ok(());
@@ -141,55 +173,375 @@ fn ensure_slot_matches(dir: &Path, url: &str) -> Result<()> {
     )))
 }
 
-/// Fetch the current state of every branch.
-pub fn fetch(url: &str) -> Result<()> {
-    let dir = ensure_clone(url)?;
-    git(
-        &[
-            "fetch",
-            "--quiet",
-            "--prune",
-            "origin",
-            "+refs/heads/*:refs/heads/*",
-        ],
-        Some(&dir),
-    )?;
+const HEADS_MIRROR: &str = "+refs/heads/*:refs/heads/*";
+
+fn clone_network(remote: gix::Url, staging: &Path) -> Result<()> {
+    let mut prepare = gix::clone::PrepareFetch::new(
+        remote,
+        staging,
+        gix::create::Kind::Bare,
+        gix::create::Options::default(),
+        gix::open::Options::isolated(),
+    )
+    .map_err(|e| gix_err("clone", e))?
+    // A mirror layout, as `git clone --bare` makes: heads land in
+    // refs/heads/*. gix adds its own remotes/origin refspec before this
+    // closure runs, so the refspec is replaced, not appended.
+    .configure_remote(|r| {
+        Ok(
+            r.with_refspecs([HEADS_MIRROR], gix::remote::Direction::Fetch)?
+                .with_fetch_tags(gix::remote::fetch::Tags::None),
+        )
+    })
+    .configure_connection(|conn| {
+        conn.set_credentials(credential_fn());
+        Ok(())
+    });
+    prepare
+        .fetch_only(gix::progress::Discard, &AtomicBool::new(false))
+        .map_err(|e| gix_err("clone", e))?;
     Ok(())
 }
 
-/// The commit that a declared revision names. `None` takes the head of
-/// the default branch, which only an explicit fetch advances.
+/// Bring the cache for `url` up to date: every head as the source has
+/// it, heads the source dropped removed, HEAD as the source's HEAD.
+pub fn fetch(url: &str) -> Result<()> {
+    let dir = ensure_clone(url)?;
+    let heads = match classify(url)? {
+        Source::Ssh => return Err(refuse_ssh(url)),
+        Source::Local(path) => mirror_local(&path, &dir, url, MirrorMode::Update)?,
+        Source::Network(_) => fetch_network(&dir)?,
+    };
+    write_fetch_head(&dir, url, &heads)
+}
+
+fn fetch_network(dir: &Path) -> Result<Vec<(gix::ObjectId, String)>> {
+    let mut repo = open_isolated(dir)?;
+    repo.committer_or_set_generic_fallback()
+        .map_err(|e| gix_err("fetch", e))?;
+    let remote = repo
+        .find_remote("origin")
+        .map_err(|e| gix_err("fetch", e))?;
+    let outcome = remote
+        .connect(gix::remote::Direction::Fetch)
+        .map_err(|e| gix_err("fetch", e))?
+        .with_credentials(credential_fn())
+        .prepare_fetch(
+            gix::progress::Discard,
+            gix::remote::ref_map::Options::default(),
+        )
+        .map_err(|e| gix_err("fetch", e))?
+        .receive(gix::progress::Discard, &AtomicBool::new(false))
+        .map_err(|e| gix_err("fetch", e))?;
+
+    // gix has no prune. A head the remote no longer maps to is deleted
+    // by hand, which is what `git fetch --prune` did.
+    let mut keep = std::collections::BTreeSet::new();
+    let mut heads = Vec::new();
+    for m in &outcome.ref_map.mappings {
+        let Some(local) = m.local.as_ref() else {
+            continue;
+        };
+        keep.insert(local.clone());
+        if let Some(id) = m.remote.as_id() {
+            heads.push((id.to_owned(), local.to_string()));
+        }
+    }
+    let mut deletes = Vec::new();
+    let refs = repo.references().map_err(|e| gix_err("fetch", e))?;
+    for r in refs
+        .prefixed("refs/heads/")
+        .map_err(|e| gix_err("fetch", e))?
+    {
+        let r = r.map_err(|e| gix_err("fetch", e))?;
+        if !keep.contains(r.name().as_bstr()) {
+            deletes.push(delete_edit(r.name().to_owned()));
+        }
+    }
+    repo.edit_references(deletes)
+        .map_err(|e| gix_err("prune", e))?;
+    Ok(heads)
+}
+
+fn delete_edit(name: gix::refs::FullName) -> gix::refs::transaction::RefEdit {
+    gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Delete {
+            expected: gix::refs::transaction::PreviousValue::Any,
+            log: gix::refs::transaction::RefLog::AndReference,
+        },
+        name,
+        deref: false,
+    }
+}
+
+fn update_edit(
+    name: gix::refs::FullName,
+    target: gix::refs::Target,
+) -> gix::refs::transaction::RefEdit {
+    gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: gix::refs::transaction::LogChange::default(),
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: target,
+        },
+        name,
+        deref: false,
+    }
+}
+
+/// gix writes no FETCH_HEAD. `seconds_since_fetch` reads its mtime, so
+/// `fetch` writes it, in git's line format.
+fn write_fetch_head(dir: &Path, url: &str, heads: &[(gix::ObjectId, String)]) -> Result<()> {
+    let mut text = String::new();
+    for (i, (id, name)) in heads.iter().enumerate() {
+        let branch = name.strip_prefix("refs/heads/").unwrap_or(name);
+        let mark = if i == 0 { "" } else { "not-for-merge" };
+        text.push_str(&format!("{id}\t{mark}\tbranch '{branch}' of {url}\n"));
+    }
+    std::fs::write(dir.join("FETCH_HEAD"), text)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MirrorMode {
+    Create,
+    Update,
+}
+
+/// Fill or refresh a bare slot from a repository on this machine, by
+/// reading its objects and refs directly. The result is what
+/// `git clone --bare` then `git fetch --prune origin +refs/heads/*:refs/heads/*`
+/// produced: every object reachable from the source's heads, the same
+/// heads, the same HEAD, and `remote.origin.url` set to the declared URL.
+///
+/// Refs advance only after every object is copied, so an interrupted
+/// copy leaves orphan objects and never a ref that points at a hole.
+fn mirror_local(
+    src_path: &Path,
+    dst_dir: &Path,
+    declared_url: &str,
+    mode: MirrorMode,
+) -> Result<Vec<(gix::ObjectId, String)>> {
+    let src = gix::open_opts(src_path, gix::open::Options::isolated())
+        .map_err(|e| gix_err(&format!("open {}", src_path.display()), e))?;
+    let mut dst = match mode {
+        MirrorMode::Create => gix::init_bare(dst_dir).map_err(|e| gix_err("init", e))?,
+        MirrorMode::Update => open_isolated(dst_dir)?,
+    };
+    dst.committer_or_set_generic_fallback()
+        .map_err(|e| gix_err("mirror", e))?;
+
+    // 1. The source's heads.
+    let mut heads: Vec<(gix::refs::FullName, gix::ObjectId)> = Vec::new();
+    let refs = src.references().map_err(|e| gix_err("mirror", e))?;
+    for r in refs
+        .prefixed("refs/heads/")
+        .map_err(|e| gix_err("mirror", e))?
+    {
+        let mut r = r.map_err(|e| gix_err("mirror", e))?;
+        let id = r.peel_to_id().map_err(|e| gix_err("mirror", e))?.detach();
+        heads.push((r.name().to_owned(), id));
+    }
+
+    // 2. Every reachable object: commits, their trees, and every entry.
+    let mut copier = Copier {
+        src: &src,
+        dst: &dst,
+        buf: Vec::new(),
+        seen: std::collections::HashSet::new(),
+    };
+    let walk = src
+        .rev_walk(heads.iter().map(|(_, id)| *id))
+        .all()
+        .map_err(|e| gix_err("mirror", e))?;
+    for info in walk {
+        let info = info.map_err(|e| gix_err("mirror", e))?;
+        let commit = src.find_commit(info.id).map_err(|e| gix_err("mirror", e))?;
+        let tree_id = commit.tree_id().map_err(|e| gix_err("mirror", e))?.detach();
+        copier.tree(tree_id)?;
+        copier.copy(info.id)?;
+    }
+
+    // 3. Refs: every source head upserted, every other dst head deleted.
+    let names: std::collections::BTreeSet<_> = heads.iter().map(|(n, _)| n.clone()).collect();
+    let mut edits = Vec::new();
+    let dst_refs = dst.references().map_err(|e| gix_err("mirror", e))?;
+    for r in dst_refs
+        .prefixed("refs/heads/")
+        .map_err(|e| gix_err("mirror", e))?
+    {
+        let r = r.map_err(|e| gix_err("mirror", e))?;
+        if !names.contains(r.name()) {
+            edits.push(delete_edit(r.name().to_owned()));
+        }
+    }
+    for (name, id) in &heads {
+        edits.push(update_edit(name.clone(), gix::refs::Target::Object(*id)));
+    }
+    // HEAD mirrors the source: symbolic to the same branch when it has
+    // one, else detached at the same commit. An unborn HEAD keeps the
+    // init default.
+    let head_target = match src.head_name() {
+        Ok(Some(branch)) => Some(gix::refs::Target::Symbolic(branch)),
+        Ok(None) => src
+            .head_id()
+            .ok()
+            .map(|id| gix::refs::Target::Object(id.detach())),
+        Err(_) => None,
+    };
+    if let Some(target) = head_target {
+        let head: gix::refs::FullName = "HEAD".try_into().expect("HEAD is a valid ref name");
+        edits.push(update_edit(head, target));
+    }
+    dst.edit_references(edits)
+        .map_err(|e| gix_err("mirror", e))?;
+
+    // 4. remote.origin.url, so ensure_slot_matches and store identity
+    // keep working.
+    if let MirrorMode::Create = mode {
+        let mut cfg = gix::config::File::from_path_no_includes(
+            dst_dir.join("config"),
+            gix::config::Source::Local,
+        )
+        .map_err(|e| gix_err("config", e))?;
+        let mut remote = dst
+            .remote_at(declared_url)
+            .map_err(|e| gix_err("config", e))?
+            .with_refspecs([HEADS_MIRROR], gix::remote::Direction::Fetch)
+            .map_err(|e| gix_err("config", e))?;
+        remote
+            .save_as_to("origin", &mut cfg)
+            .map_err(|e| gix_err("config", e))?;
+        std::fs::write(dst_dir.join("config"), cfg.to_bstring())?;
+    }
+    Ok(heads.iter().map(|(n, id)| (*id, n.to_string())).collect())
+}
+
+/// Copies objects from one repository's database to another's, once each.
+struct Copier<'a> {
+    src: &'a gix::Repository,
+    dst: &'a gix::Repository,
+    buf: Vec<u8>,
+    seen: std::collections::HashSet<gix::ObjectId>,
+}
+
+impl Copier<'_> {
+    fn copy(&mut self, id: gix::ObjectId) -> Result<()> {
+        use gix::objs::Exists as _;
+        use gix::prelude::{Find as _, Write as _};
+        if !self.seen.insert(id) {
+            return Ok(());
+        }
+        if self.dst.objects.exists(&id) {
+            return Ok(());
+        }
+        let data = self
+            .src
+            .objects
+            .try_find(&id, &mut self.buf)
+            .map_err(|e| gix_err("read object", e))?
+            .ok_or_else(|| {
+                Error::InvalidStore(format!("object {id} is missing from the source"))
+            })?;
+        self.dst
+            .objects
+            .write_buf(data.kind, data.data)
+            .map_err(|e| gix_err("write object", e))?;
+        Ok(())
+    }
+
+    /// A tree and everything under it: subtrees recursively, blobs as
+    /// leaves. Submodule commits are skipped; they live elsewhere.
+    fn tree(&mut self, id: gix::ObjectId) -> Result<()> {
+        if self.seen.contains(&id) {
+            return Ok(());
+        }
+        let tree = self
+            .src
+            .find_tree(id)
+            .map_err(|e| gix_err("read tree", e))?;
+        let mut subtrees = Vec::new();
+        let mut blobs = Vec::new();
+        for entry in tree.iter() {
+            let entry = entry.map_err(|e| gix_err("read tree", e))?;
+            let mode = entry.mode();
+            if mode.is_tree() {
+                subtrees.push(entry.oid().to_owned());
+            } else if mode.is_blob() || mode.is_link() {
+                blobs.push(entry.oid().to_owned());
+            }
+        }
+        for b in blobs {
+            self.copy(b)?;
+        }
+        for t in subtrees {
+            self.tree(t)?;
+        }
+        self.copy(id)
+    }
+}
+
+/// Resolve a revision to a commit id in a cache slot. An unknown name is
+/// an error, never an echo, so a bad pin cannot read as an empty store.
 pub fn resolve_rev(dir: &Path, rev: Option<&str>) -> Result<String> {
-    // ^{commit} makes rev-parse fail on a name that does not exist,
-    // rather than echoing it back. Without it a pin nobody can resolve
-    // reads as an empty store instead of an error.
-    let target = match rev {
+    let repo = open_isolated(dir)?;
+    let spec = match rev {
         Some(r) => format!("{r}^{{commit}}"),
         None => "HEAD^{commit}".to_string(),
     };
-    let out = git(&["rev-parse", "--verify", &target], Some(dir))?;
-    Ok(out.trim().to_string())
+    let id = repo
+        .rev_parse_single(spec.as_str())
+        .map_err(|e| gix_err(&format!("rev-parse {spec}"), e))?;
+    Ok(id.to_hex().to_string())
 }
 
-/// The files under a directory prefix at one revision.
+/// The files under `prefix` at `rev`, relative to the prefix, as
+/// `git ls-tree -r --name-only rev:prefix` listed them. A prefix that
+/// does not exist at that revision is an empty store, not an error.
+/// Only blobs are listed; symlinks and submodules are not documents.
 pub fn list_tree(dir: &Path, rev: &str, prefix: &str) -> Result<Vec<String>> {
+    let Ok(repo) = open_isolated(dir) else {
+        return Ok(Vec::new());
+    };
     let spec = if prefix.is_empty() {
         rev.to_string()
     } else {
         format!("{rev}:{prefix}")
     };
-    // A missing directory at that revision is an empty store, not an
-    // error: a store can add its notes later than the revision pinned.
-    let out = match git(&["ls-tree", "-r", "--name-only", &spec], Some(dir)) {
-        Ok(out) => out,
-        Err(_) => return Ok(Vec::new()),
+    let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
+        return Ok(Vec::new());
     };
-    Ok(out.lines().map(|l| l.to_string()).collect())
+    let Ok(obj) = id.object() else {
+        return Ok(Vec::new());
+    };
+    let Ok(tree) = obj.peel_to_tree() else {
+        return Ok(Vec::new());
+    };
+    let entries = tree
+        .traverse()
+        .breadthfirst
+        .files()
+        .map_err(|e| gix_err("ls-tree", e))?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.mode.is_blob())
+        .map(|e| e.filepath.to_string())
+        .collect())
 }
 
-/// The content of one file at one revision.
+/// One file's text at `rev:path`.
 pub fn show(dir: &Path, rev: &str, path: &str) -> Result<String> {
-    git(&["show", &format!("{rev}:{path}")], Some(dir))
+    let repo = open_isolated(dir)?;
+    let spec = format!("{rev}:{path}");
+    let obj = repo
+        .rev_parse_single(spec.as_str())
+        .map_err(|e| gix_err(&spec, e))?
+        .object()
+        .map_err(|e| gix_err(&spec, e))?;
+    let blob = obj
+        .try_into_blob()
+        .map_err(|_| Error::InvalidStore(format!("{spec}: not a file")))?;
+    Ok(String::from_utf8_lossy(&blob.data).into_owned())
 }
 
 /// How long ago the cache last fetched, in seconds. A stale answer must
@@ -215,20 +567,179 @@ pub fn humanize_age(seconds: u64) -> String {
     }
 }
 
-/// The origin remote of a checkout, for store identity.
+/// The origin remote of a checkout, for store identity. The raw config
+/// value is read, so no `url.insteadOf` rewrite is applied.
 pub fn origin_url(path: &Path) -> Option<String> {
     if !path.join(".git").exists() && !path.join("HEAD").exists() {
         return None;
     }
-    git(&["remote", "get-url", "origin"], Some(path))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let repo = open_isolated(path).ok()?;
+    let raw = repo.config_snapshot().string("remote.origin.url")?;
+    let s = raw.to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// The credential source for https, in-process: userinfo in the URL,
+/// then git-credential-store's file. No helper program runs and nothing
+/// prompts. gix asks only after a 401, so a public store never gets here.
+// The error type is gix's; its size is not this crate's to shrink.
+#[allow(clippy::result_large_err)]
+fn credential_fn()
+-> impl FnMut(gix::credentials::helper::Action) -> gix::credentials::protocol::Result {
+    |action| {
+        let Some(ctx) = action.context() else {
+            return Ok(None);
+        };
+        let Some(url) = ctx.url.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(parsed) = gix::url::parse(url.as_bstr()) else {
+            return Ok(None);
+        };
+        let found = match (parsed.user(), parsed.password()) {
+            (Some(u), Some(p)) => Some((u.to_owned(), p.to_owned())),
+            _ => credentials_from_store_file(&parsed),
+        };
+        let Some((username, password)) = found else {
+            return Ok(None);
+        };
+        Ok(Some(gix::credentials::protocol::Outcome {
+            identity: gix::sec::identity::Account {
+                username,
+                password,
+                oauth_refresh_token: None,
+            },
+            next: ctx.clone().into(),
+        }))
+    }
+}
+
+/// `~/.git-credentials` and `$XDG_CONFIG_HOME/git/credentials`, one
+/// `scheme://user:pass@host[/path]` per line. The first line whose
+/// scheme and host match wins, as git-credential-store(1) resolves it.
+fn credentials_from_store_file(want: &gix::Url) -> Option<(String, String)> {
+    let mut files = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        files.push(PathBuf::from(&home).join(".git-credentials"));
+        files.push(PathBuf::from(&home).join(".config/git/credentials"));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        files.push(PathBuf::from(xdg).join("git/credentials"));
+    }
+    let want_host = want.host()?;
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Ok(entry) = gix::url::parse(gix::bstr::BStr::new(line)) else {
+                continue;
+            };
+            if entry.scheme != want.scheme || entry.host() != Some(want_host) {
+                continue;
+            }
+            if let (Some(u), Some(p)) = (entry.user(), entry.password()) {
+                return Some((u.to_owned(), p.to_owned()));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "mdstore-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn sig() -> gix::actor::Signature {
+        gix::actor::Signature {
+            name: "t".into(),
+            email: "t@e".into(),
+            time: gix::date::Time::new(1_600_000_000, 0),
+        }
+    }
+
+    /// Write `files` (path → text) as a tree, nested by `/`, and commit
+    /// it on HEAD. Returns the commit id. All through gix; no git process.
+    fn commit_files(
+        repo: &gix::Repository,
+        files: &[(&str, &str)],
+        message: &str,
+    ) -> gix::ObjectId {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Dir {
+            files: BTreeMap<String, gix::ObjectId>,
+            dirs: BTreeMap<String, Dir>,
+        }
+        let mut root = Dir::default();
+        for (path, text) in files {
+            let oid = repo.write_blob(text.as_bytes()).unwrap().detach();
+            let mut parts: Vec<&str> = path.split('/').collect();
+            let name = parts.pop().unwrap().to_string();
+            let mut node = &mut root;
+            for part in parts {
+                node = node.dirs.entry(part.to_string()).or_default();
+            }
+            node.files.insert(name, oid);
+        }
+        fn write(repo: &gix::Repository, d: &Dir) -> gix::ObjectId {
+            let mut entries = Vec::new();
+            for (name, oid) in &d.files {
+                entries.push(gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Blob.into(),
+                    filename: name.as_str().into(),
+                    oid: *oid,
+                });
+            }
+            for (name, sub) in &d.dirs {
+                entries.push(gix::objs::tree::Entry {
+                    mode: gix::objs::tree::EntryKind::Tree.into(),
+                    filename: name.as_str().into(),
+                    oid: write(repo, sub),
+                });
+            }
+            let mut tree = gix::objs::Tree { entries };
+            tree.entries.sort();
+            repo.write_object(&tree).unwrap().detach()
+        }
+        let tree = write(repo, &root);
+        let parents: Vec<gix::ObjectId> = repo
+            .head_id()
+            .ok()
+            .map(|id| id.detach())
+            .into_iter()
+            .collect();
+        let s = sig();
+        repo.commit_as(
+            s.to_ref(&mut Default::default()),
+            s.to_ref(&mut Default::default()),
+            "HEAD",
+            message,
+            tree,
+            parents,
+        )
+        .unwrap()
+        .detach()
+    }
+
+    fn init(dir: &Path) -> gix::Repository {
+        gix::init(dir).unwrap()
+    }
 
     #[test]
     fn cache_directories_are_stable_and_distinct() {
@@ -247,19 +758,18 @@ mod tests {
     fn a_slot_holding_another_repository_is_refused() {
         // Two URLs that are not the same repository can land in one
         // slot, because the slot name merges https, scp, and .git.
-        let base = std::env::temp_dir().join(format!(
-            "mdstore-slot-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        git(&["init", "--quiet", "-b", "main"], Some(&base)).unwrap();
-        git(
-            &["remote", "add", "origin", "https://example.com/org/other"],
-            Some(&base),
-        )
-        .unwrap();
+        let base = scratch("slot");
+        init(&base);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(base.join(".git/config"))
+            .unwrap()
+            .write_all(b"[remote \"origin\"]\n\turl = https://example.com/org/other\n")
+            .unwrap();
+        assert_eq!(
+            origin_url(&base).as_deref(),
+            Some("https://example.com/org/other")
+        );
 
         let err = ensure_slot_matches(&base, "https://example.com/org/kb")
             .unwrap_err()
@@ -270,26 +780,15 @@ mod tests {
         assert!(ensure_slot_matches(&base, "git@example.com:org/other.git").is_ok());
     }
 
+    use std::io::Write as _;
+
     #[test]
     fn a_revision_that_does_not_exist_is_an_error() {
-        // Without --verify and ^{commit}, rev-parse echoes an unknown
-        // name back, and the pin then reads as an empty store instead
-        // of failing.
-        let base = std::env::temp_dir().join(format!(
-            "mdstore-rev-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        std::fs::write(base.join("a.md"), "---\ntitle: a\n---\n").unwrap();
-        for args in [
-            vec!["init", "--quiet", "-b", "main"],
-            vec!["add", "-A"],
-            vec!["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "one"],
-        ] {
-            git(&args, Some(&base)).unwrap();
-        }
+        // A rev-parse without ^{commit} would echo an unknown name back,
+        // and the pin then reads as an empty store instead of failing.
+        let base = scratch("rev");
+        let repo = init(&base);
+        commit_files(&repo, &[("a.md", "---\ntitle: a\n---\n")], "one");
         assert!(resolve_rev(&base, None).is_ok());
         assert!(
             resolve_rev(&base, Some("no-such-tag")).is_err(),
@@ -307,73 +806,104 @@ mod tests {
     }
 
     #[test]
-    fn a_real_repository_round_trips_through_the_cache() {
-        // Build a repository, clone it into the cache, and read a file
-        // from git objects at a pinned revision.
-        let base = std::env::temp_dir().join(format!("mdstore-git-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let origin = base.join("origin");
-        std::fs::create_dir_all(origin.join("notes")).unwrap();
-        std::fs::write(origin.join("notes/a1-first.md"), "---\ntitle: First\n---\n").unwrap();
-        for args in [
-            vec!["init", "--quiet", "-b", "main"],
-            vec!["add", "-A"],
-            vec![
-                "-c",
-                "user.email=t@e",
-                "-c",
-                "user.name=t",
-                "commit",
-                "-qm",
-                "one",
-            ],
-        ] {
-            git(&args, Some(&origin)).unwrap();
-        }
-        let first = git(&["rev-parse", "HEAD"], Some(&origin))
-            .unwrap()
-            .trim()
+    fn an_ssh_url_is_refused_with_the_fix_in_the_message() {
+        let _env = crate::env_lock();
+        let base = scratch("ssh");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+        let err = ensure_clone("git@example.com:org/kb.git")
+            .unwrap_err()
             .to_string();
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+        assert!(err.contains("https"), "{err}");
+        assert!(
+            !base.join("cache").exists()
+                || std::fs::read_dir(base.join("cache"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
+    }
 
+    #[test]
+    fn a_real_repository_round_trips_through_the_cache() {
+        // Build a repository, mirror it into the cache, read a file from
+        // objects at a pinned revision, then fetch a later commit and a
+        // dropped branch.
+        let _env = crate::env_lock();
+        let base = scratch("git");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        let first = commit_files(
+            &repo,
+            &[("notes/a1-first.md", "---\ntitle: First\n---\n")],
+            "one",
+        );
         // A second commit that the pinned revision must not see.
-        std::fs::write(
-            origin.join("notes/b2-second.md"),
-            "---\ntitle: Second\n---\n",
-        )
-        .unwrap();
-        git(&["add", "-A"], Some(&origin)).unwrap();
-        git(
+        commit_files(
+            &repo,
             &[
-                "-c",
-                "user.email=t@e",
-                "-c",
-                "user.name=t",
-                "commit",
-                "-qm",
-                "two",
+                ("notes/a1-first.md", "---\ntitle: First\n---\n"),
+                ("notes/b2-second.md", "---\ntitle: Second\n---\n"),
             ],
-            Some(&origin),
-        )
-        .unwrap();
+            "two",
+        );
+        // A side branch that the fetch must prune once it is gone.
+        let side: gix::refs::FullName = "refs/heads/side".try_into().unwrap();
+        repo.edit_reference(update_edit(side.clone(), gix::refs::Target::Object(first)))
+            .unwrap();
 
-        let url = origin.to_string_lossy().to_string();
+        let url = format!("file://{}", origin.display());
         unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
         let dir = ensure_clone(&url).unwrap();
         assert!(is_cached(&url));
+        assert_eq!(
+            origin_url(&dir).as_deref(),
+            Some(url.as_str()),
+            "the slot records the declared URL"
+        );
 
         let head = resolve_rev(&dir, None).unwrap();
         assert_eq!(list_tree(&dir, &head, "notes").unwrap().len(), 2);
+        assert!(
+            resolve_rev(&dir, Some("side")).is_ok(),
+            "the side branch was mirrored"
+        );
 
         // The pin sees only the first commit, and both revisions read
-        // out of the same clone.
+        // out of the same slot.
         assert_eq!(
-            list_tree(&dir, &first, "notes").unwrap(),
+            list_tree(&dir, &first.to_string(), "notes").unwrap(),
             vec!["a1-first.md"]
         );
-        let text = show(&dir, &first, "notes/a1-first.md").unwrap();
+        let text = show(&dir, &first.to_string(), "notes/a1-first.md").unwrap();
         assert!(text.contains("title: First"));
+        assert!(
+            list_tree(&dir, &head, "no-such-dir").unwrap().is_empty(),
+            "a missing prefix is an empty store"
+        );
 
+        // Move the source on, drop the side branch, fetch: the slot
+        // follows, and the pruned branch is gone.
+        commit_files(
+            &repo,
+            &[("notes/c3-third.md", "---\ntitle: Third\n---\n")],
+            "three",
+        );
+        repo.edit_reference(delete_edit(side)).unwrap();
+        fetch(&url).unwrap();
+        let head2 = resolve_rev(&dir, None).unwrap();
+        assert_ne!(head, head2);
+        assert_eq!(
+            list_tree(&dir, &head2, "notes").unwrap(),
+            vec!["c3-third.md"]
+        );
+        assert!(
+            resolve_rev(&dir, Some("side")).is_err(),
+            "a dropped branch is pruned"
+        );
         assert!(seconds_since_fetch(&dir).is_some());
+        assert!(dir.join("FETCH_HEAD").exists());
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 }

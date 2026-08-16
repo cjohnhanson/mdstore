@@ -1,17 +1,17 @@
-//! Object-storage stores.
+//! Object-storage stores, over https.
 //!
 //! A blob store keeps its documents as objects under one prefix. The
 //! cache holds a local copy of each object. A blob store is read-only,
 //! and only an explicit sync writes to the cache, which is the same
 //! contract that a git store has.
 //!
-//! The CLI runs the vendor tool for the scheme: `aws s3` for `s3://`,
-//! `gcloud storage` for `gs://`, and `curl` for `https://`. That keeps
-//! this crate free of a cloud SDK, and it keeps credentials where the
-//! user already configured them.
+//! The one scheme is `https://` (and `http://`): the prefix publishes
+//! an `index.txt` that names its documents, one per line, and each is
+//! fetched by GET. Nothing here spawns a process. `s3://` and `gs://`
+//! were once synced by the vendor CLIs; those schemes are refused now,
+//! with the alternative in the message.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::error::{Error, Result};
 
@@ -45,105 +45,97 @@ pub fn is_cached(url: &str) -> bool {
     cache_dir(url).join(".mdstore-blob").exists()
 }
 
-fn run(program: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| Error::InvalidStore(format!("cannot run {program}: {e}")))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(Error::InvalidStore(format!("{program}: {stderr}")));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+/// True when a listed name stays inside the store: no leading `/`, no
+/// empty or dot-led component, no parent, root, or prefix component.
+pub(crate) fn name_stays_inside(name: &str) -> bool {
+    !(name.is_empty()
+        || name.starts_with('/')
+        || Path::new(name).components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.')))
 }
 
 /// Copy the objects under a prefix into the cache.
 ///
-/// The listing and the copy both come from the vendor tool, so its
-/// credentials, its retries, and its proxy settings all apply.
+/// The fetch fills a directory beside the slot and renames it into
+/// place, so a retracted document does not survive in the cache and an
+/// interrupted sync leaves the previous copy untouched.
 pub fn sync(url: &str) -> Result<PathBuf> {
-    let dir = cache_dir(url);
-    std::fs::create_dir_all(&dir)?;
-    let target = dir.to_string_lossy().to_string();
-    let source = url.trim_end_matches('/').to_string();
-
     match scheme_of(url) {
-        Some("s3") => {
-            // --delete so a document the publisher retracted leaves
-            // the cache too.
-            run(
-                "aws",
-                &["s3", "sync", "--delete", "--only-show-errors", &source, &target],
-            )?;
-        }
-        Some("gs") => {
-            run(
-                "gcloud",
-                &[
-                    "storage",
-                    "rsync",
-                    "--recursive",
-                    "--delete-unmatched-destination-objects",
-                    &source,
-                    &target,
-                ],
-            )?;
-        }
-        Some("https") => {
-            // An index at the prefix lists the documents, one name per
-            // line. A plain HTTP prefix has no listing protocol, so the
-            // store publishes the index that it wants read.
-            //
-            // The fetch fills a directory beside the slot and renames
-            // it into place, so a retracted document does not survive
-            // in the cache and an interrupted sync leaves nothing.
-            let staging = dir.with_extension(format!("new-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&staging);
-            std::fs::create_dir_all(&staging)?;
-            let dir = staging.clone();
-            let index = run("curl", &["-fsSL", &format!("{source}/index.txt")])?;
-            for name in index.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                // The index is written by whoever publishes the store.
-                // An entry names one file under the prefix, never a
-                // path out of it and never a dot-file.
-                let bad = name.starts_with('/')
-                    || name.starts_with('.')
-                    || std::path::Path::new(name).components().any(|c| {
-                        matches!(
-                            c,
-                            std::path::Component::ParentDir
-                                | std::path::Component::RootDir
-                                | std::path::Component::Prefix(_)
-                        )
-                    })
-                    || name.split('/').any(|part| part.starts_with('.'));
-                if bad {
-                    return Err(Error::InvalidStore(format!(
-                        "index entry '{name}' leaves the store"
-                    )));
-                }
-                let body = run("curl", &["-fsSL", &format!("{source}/{name}")])?;
-                let path = dir.join(name);
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(path, body)?;
-            }
-            std::fs::write(dir.join(".mdstore-blob"), url)?;
-            let final_dir = cache_dir(url);
-            let _ = std::fs::remove_dir_all(&final_dir);
-            std::fs::rename(&dir, &final_dir)?;
-            return Ok(final_dir);
-        }
-        _ => {
+        Some("https") => {}
+        Some(scheme) => {
             return Err(Error::InvalidStore(format!(
-                "'{url}' is not a blob URL; use s3://, gs://, or https://"
+                "'{url}': {scheme}:// stores are not supported; mdstore spawns no vendor CLI. \
+                 Publish the prefix over https with an index.txt, or declare a git store."
+            )));
+        }
+        None => {
+            return Err(Error::InvalidStore(format!(
+                "'{url}' is not a blob URL; use https://"
             )));
         }
     }
-
-    std::fs::write(dir.join(".mdstore-blob"), url)?;
+    let dir = cache_dir(url);
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let source = url.trim_end_matches('/').to_string();
+    let staging = dir.with_extension(format!("new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    let result = fill(&source, &staging);
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    std::fs::write(staging.join(".mdstore-blob"), url)?;
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::rename(&staging, &dir)?;
     Ok(dir)
+}
+
+fn fill(source: &str, into: &Path) -> Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("mdstore/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| Error::InvalidStore(format!("http client: {e}")))?;
+    let get = |what: &str| -> Result<Vec<u8>> {
+        let resp = client
+            .get(what)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|e| Error::InvalidStore(format!("GET {what}: {e}")))?;
+        let bytes = resp
+            .bytes()
+            .map_err(|e| Error::InvalidStore(format!("GET {what}: {e}")))?;
+        Ok(bytes.to_vec())
+    };
+    // The index is written by whoever publishes the store. An entry
+    // names one file under the prefix, never a path out of it and never
+    // a dot-file.
+    let index = String::from_utf8_lossy(&get(&format!("{source}/index.txt"))?).into_owned();
+    for name in index.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !name_stays_inside(name) {
+            return Err(Error::InvalidStore(format!(
+                "index entry '{name}' leaves the store"
+            )));
+        }
+        let body = get(&format!("{source}/{name}"))?;
+        let path = into.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, body)?;
+    }
+    Ok(())
 }
 
 /// The local copy of a blob store, if it was synced.
@@ -206,35 +198,122 @@ mod tests {
 
     #[test]
     fn an_index_entry_that_leaves_the_store_is_refused() {
-        for bad in ["../escape.md", "/etc/passwd", ".git/config", "a/../../b.md", ".hidden"] {
-            let path = std::path::Path::new(bad);
-            let rejected = bad.starts_with('/')
-                || bad.starts_with('.')
-                || path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                })
-                || bad.split('/').any(|p| p.starts_with('.'));
-            assert!(rejected, "{bad} must be refused");
+        for bad in [
+            "../escape.md",
+            "/etc/passwd",
+            ".git/config",
+            "a/../../b.md",
+            ".hidden",
+            "a//b.md",
+            "dir/",
+            "",
+        ] {
+            assert!(!name_stays_inside(bad), "{bad:?} must be refused");
         }
         for good in ["skills/a.md", "note.md", "deep/nested/file.md"] {
-            let path = std::path::Path::new(good);
-            let rejected = good.starts_with('/')
-                || good.starts_with('.')
-                || path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir
-                            | std::path::Component::RootDir
-                            | std::path::Component::Prefix(_)
-                    )
-                })
-                || good.split('/').any(|p| p.starts_with('.'));
-            assert!(!rejected, "{good} must be allowed");
+            assert!(name_stays_inside(good), "{good} must be allowed");
         }
+    }
+
+    #[test]
+    fn a_vendor_scheme_is_refused_with_the_alternative() {
+        for url in ["s3://bucket/prefix", "gs://bucket/prefix"] {
+            let err = sync(url).unwrap_err().to_string();
+            assert!(err.contains("https"), "{err}");
+            assert!(err.contains("git store"), "{err}");
+        }
+    }
+
+    /// A loopback HTTP server that serves a fixed set of paths, so the
+    /// https sync is exercised end to end with no network.
+    type Routes = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, &'static str)>>>;
+
+    fn serve(routes: Vec<(&'static str, &'static str)>) -> (String, Routes) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes: Routes = std::sync::Arc::new(std::sync::Mutex::new(routes));
+        let served = routes.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let body = served
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(p, _)| *p == path)
+                    .map(|(_, b)| *b);
+                let response = match body {
+                    Some(b) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
+                        b.len()
+                    ),
+                    None => {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    }
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (format!("http://{addr}/kb"), routes)
+    }
+
+    #[test]
+    fn an_https_store_syncs_its_index_and_documents_into_the_cache() {
+        let _env = crate::env_lock();
+        let base = std::env::temp_dir().join(format!("mdstore-blob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", &base) };
+        let (url, routes) = serve(vec![
+            ("/kb/index.txt", "a.md\nnotes/b.md\n"),
+            ("/kb/a.md", "---\ntitle: A\n---\n"),
+            ("/kb/notes/b.md", "---\ntitle: B\n---\n"),
+        ]);
+        let dir = sync(&url).unwrap();
+        assert!(is_cached(&url));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.md")).unwrap(),
+            "---\ntitle: A\n---\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes/b.md")).unwrap(),
+            "---\ntitle: B\n---\n"
+        );
+        assert_eq!(locate(&url).unwrap(), dir);
+        assert!(seconds_since_sync(&dir).is_some());
+
+        // The publisher retracts b.md and changes a.md. The next sync of
+        // the same URL follows: b.md leaves the cache, a.md updates.
+        *routes.lock().unwrap() = vec![("/kb/index.txt", "a.md\n"), ("/kb/a.md", "v2\n")];
+        let dir2 = sync(&url).unwrap();
+        assert_eq!(dir2, dir);
+        assert_eq!(std::fs::read_to_string(dir.join("a.md")).unwrap(), "v2\n");
+        assert!(
+            !dir.join("notes").exists(),
+            "a retracted document leaves the cache"
+        );
+
+        // An index that names a document the server lacks fails the
+        // sync, and the previous copy stays whole.
+        *routes.lock().unwrap() = vec![("/kb/index.txt", "missing.md\n")];
+        let err = sync(&url).unwrap_err().to_string();
+        assert!(err.contains("404"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.md")).unwrap(), "v2\n");
+
+        // An escaping index entry is refused before any fetch.
+        *routes.lock().unwrap() = vec![("/kb/index.txt", "../escape.md\n")];
+        let err = sync(&url).unwrap_err().to_string();
+        assert!(err.contains("leaves the store"), "{err}");
+
+        // A URL that never synced is not in the cache.
+        let (other, _) = serve(vec![]);
+        assert!(!is_cached(&other));
+        assert!(locate(&other).unwrap_err().contains("store sync"));
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 }

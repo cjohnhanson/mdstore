@@ -8,11 +8,24 @@ repository = "https://github.com/cjohnhanson/mdstore"
 homepage = "https://github.com/cjohnhanson/mdstore"
 readme = "README.md"
 authors = ["Cody Hanson"]
-keywords = ["markdown", "frontmatter", "yaml", "document-store"]
-categories = ["parser-implementations", "text-processing"]
+keywords = ["markdown", "frontmatter", "yaml", "document-store", "storage"]
+categories = ["parser-implementations", "text-processing", "filesystem"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# The git cache, in-process. `blocking-network-client` for fetch and
+# clone; the reqwest transport for http(s), so no git or curl process
+# runs. gix's file transport would spawn git-upload-pack, so a local
+# source is mirrored by reading its object database directly (git.rs).
+gix = { version = "0.86", default-features = false, features = [
+    "revision",
+    "sha1",
+    "blocking-network-client",
+    "blocking-http-transport-reqwest-rust-tls",
+] }
+# The https blob store: an index and its documents over plain GET. The
+# same reqwest gix uses, so one HTTP stack.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 yaml_serde = "0.10"
 thiserror = "2"
 rand = "0.10.0"
