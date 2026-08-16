@@ -727,8 +727,8 @@ mod tests {
             .collect();
         let s = sig();
         repo.commit_as(
-            s.to_ref(&mut Default::default()),
-            s.to_ref(&mut Default::default()),
+            s.to_ref(&mut gix::date::parse::TimeBuf::default()),
+            s.to_ref(&mut gix::date::parse::TimeBuf::default()),
             "HEAD",
             message,
             tree,
