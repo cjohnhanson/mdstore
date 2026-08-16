@@ -1,0 +1,11 @@
+# Repo-level gaff config. The one entry is the merge gate: these repos
+# merge by direct push, so pre-push is the merge check. Tests and the
+# missouri suite must be green, and the pushed tip must carry a
+# fresh-eyes review note. Installed by `gaff init --git`.
+git:
+  - name: merge-gate
+    on:
+      - pre-push
+    command:
+      - sh
+      - scripts/merge-gate.sh
