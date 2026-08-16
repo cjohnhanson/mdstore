@@ -45,8 +45,15 @@ pub fn is_cached(url: &str) -> bool {
     cache_dir(url).join(".mdstore-blob").exists()
 }
 
+/// The file that marks a synced slot. An index may not name it.
+const MARKER: &str = ".mdstore-blob";
+
 /// True when a listed name stays inside the store: no leading `/`, no
-/// empty or dot-led component, no parent, root, or prefix component.
+/// empty component, no `.` or `..` component, no root or prefix
+/// component, and not the slot marker. A dot-led name such as
+/// `.zettel/x.md` is allowed: that is where zettel and tisket keep
+/// their documents by default, and a blob store must be able to carry
+/// them.
 pub(crate) fn name_stays_inside(name: &str) -> bool {
     !(name.is_empty()
         || name.starts_with('/')
@@ -56,11 +63,12 @@ pub(crate) fn name_stays_inside(name: &str) -> bool {
                 std::path::Component::ParentDir
                     | std::path::Component::RootDir
                     | std::path::Component::Prefix(_)
+                    | std::path::Component::CurDir
             )
         })
         || name
             .split('/')
-            .any(|part| part.is_empty() || part.starts_with('.')))
+            .any(|part| part.is_empty() || part == "." || part == ".." || part == MARKER))
 }
 
 /// Copy the objects under a prefix into the cache.
@@ -96,39 +104,68 @@ pub fn sync(url: &str) -> Result<PathBuf> {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
-    std::fs::write(staging.join(".mdstore-blob"), url)?;
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::rename(&staging, &dir)?;
+    std::fs::write(staging.join(MARKER), url)?;
+    // Swap: the old copy moves aside, the new one moves in, then the
+    // old one goes. A crash between the renames leaves one whole copy
+    // under one of the two names, never nothing.
+    let old = dir.with_extension(format!("old-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&old);
+    let had_old = dir.exists();
+    if had_old {
+        std::fs::rename(&dir, &old)?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &dir) {
+        if had_old {
+            let _ = std::fs::rename(&old, &dir);
+        }
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_dir_all(&old);
     Ok(dir)
 }
 
+/// The URL of one document under the prefix. Each component of `name`
+/// becomes one path segment, percent-encoded, so `#`, `?`, `%`, and a
+/// space in a name reach the server as part of the path, and an
+/// encoded `..` stays an encoded literal instead of a climb.
+fn document_url(base: &reqwest::Url, name: &str) -> Result<reqwest::Url> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|()| Error::InvalidStore(format!("{base}: cannot hold a path")))?
+        .pop_if_empty()
+        .extend(name.split('/'));
+    Ok(url)
+}
+
 fn fill(source: &str, into: &Path) -> Result<()> {
+    let base =
+        reqwest::Url::parse(source).map_err(|e| Error::InvalidStore(format!("{source}: {e}")))?;
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("mdstore/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| Error::InvalidStore(format!("http client: {e}")))?;
-    let get = |what: &str| -> Result<Vec<u8>> {
+    let get = |what: reqwest::Url| -> Result<Vec<u8>> {
+        let shown = what.to_string();
         let resp = client
             .get(what)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|e| Error::InvalidStore(format!("GET {what}: {e}")))?;
+            .map_err(|e| Error::InvalidStore(format!("GET {shown}: {e}")))?;
         let bytes = resp
             .bytes()
-            .map_err(|e| Error::InvalidStore(format!("GET {what}: {e}")))?;
+            .map_err(|e| Error::InvalidStore(format!("GET {shown}: {e}")))?;
         Ok(bytes.to_vec())
     };
     // The index is written by whoever publishes the store. An entry
-    // names one file under the prefix, never a path out of it and never
-    // a dot-file.
-    let index = String::from_utf8_lossy(&get(&format!("{source}/index.txt"))?).into_owned();
+    // names one file under the prefix, never a path out of it.
+    let index = String::from_utf8_lossy(&get(document_url(&base, "index.txt")?)?).into_owned();
     for name in index.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if !name_stays_inside(name) {
             return Err(Error::InvalidStore(format!(
                 "index entry '{name}' leaves the store"
             )));
         }
-        let body = get(&format!("{source}/{name}"))?;
+        let body = get(document_url(&base, name)?)?;
         let path = into.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -201,16 +238,26 @@ mod tests {
         for bad in [
             "../escape.md",
             "/etc/passwd",
-            ".git/config",
             "a/../../b.md",
-            ".hidden",
             "a//b.md",
             "dir/",
             "",
+            "./a.md",
+            "a/./b.md",
+            ".mdstore-blob",
         ] {
             assert!(!name_stays_inside(bad), "{bad:?} must be refused");
         }
-        for good in ["skills/a.md", "note.md", "deep/nested/file.md"] {
+        for good in [
+            "skills/a.md",
+            "note.md",
+            "deep/nested/file.md",
+            ".zettel/x.md",
+            ".tisket/default/y.md",
+            "c#1.md",
+            "100%.md",
+            "a b.md",
+        ] {
             assert!(name_stays_inside(good), "{good} must be allowed");
         }
     }
@@ -270,12 +317,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         unsafe { std::env::set_var("MDSTORE_CACHE_DIR", &base) };
         let (url, routes) = serve(vec![
-            ("/kb/index.txt", "a.md\nnotes/b.md\n"),
+            (
+                "/kb/index.txt",
+                "a.md\nnotes/b.md\n.zettel/c#1.md\nnotes/100%.md\nnotes/a b.md\n",
+            ),
             ("/kb/a.md", "---\ntitle: A\n---\n"),
             ("/kb/notes/b.md", "---\ntitle: B\n---\n"),
+            // A dot dir, a `#`, a `%`, and a space: each reaches the
+            // server as one encoded path segment.
+            ("/kb/.zettel/c%231.md", "hash\n"),
+            ("/kb/notes/100%25.md", "percent\n"),
+            ("/kb/notes/a%20b.md", "space\n"),
         ]);
         let dir = sync(&url).unwrap();
         assert!(is_cached(&url));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".zettel/c#1.md")).unwrap(),
+            "hash\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes/100%.md")).unwrap(),
+            "percent\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes/a b.md")).unwrap(),
+            "space\n"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("a.md")).unwrap(),
             "---\ntitle: A\n---\n"
@@ -309,6 +376,14 @@ mod tests {
         *routes.lock().unwrap() = vec![("/kb/index.txt", "../escape.md\n")];
         let err = sync(&url).unwrap_err().to_string();
         assert!(err.contains("leaves the store"), "{err}");
+        // An encoded `..` is not a climb: it reaches the server as an
+        // encoded literal under the prefix, and 404s there.
+        *routes.lock().unwrap() = vec![("/kb/index.txt", "%2e%2e/e.md\n"), ("/e.md", "escaped\n")];
+        let err = sync(&url).unwrap_err().to_string();
+        assert!(
+            err.contains("404") && err.contains("/kb/%252e%252e/e.md"),
+            "{err}"
+        );
 
         // A URL that never synced is not in the cache.
         let (other, _) = serve(vec![]);
