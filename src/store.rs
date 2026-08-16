@@ -225,6 +225,24 @@ fn resolves_outside(repo_root: &Path, declared: &Path) -> bool {
     !target.starts_with(&root)
 }
 
+/// The location on this machine that a source names, if it names one.
+///
+/// A key proves nothing about a value. Git clones a local directory as
+/// readily as a URL, so `git: /home/you/private` names this machine
+/// exactly as `path: /home/you/private` does. Every guard about
+/// locations must therefore ask this, not `matches!(source, Path(_))`.
+fn on_machine_location(source: &StoreSource) -> Option<PathBuf> {
+    match source {
+        StoreSource::Path(p) => Some(p.clone()),
+        StoreSource::Git { url, .. } | StoreSource::Blob { url } => {
+            if is_remote_url(url) {
+                return None;
+            }
+            Some(PathBuf::from(url.strip_prefix("file://").unwrap_or(url)))
+        }
+    }
+}
+
 /// Why a declared path names one machine, if it does.
 ///
 /// A relative path is read against the store that declared it, so it
@@ -244,19 +262,36 @@ fn anchored_to_one_machine(declared: &Path) -> Option<&'static str> {
 /// The host is whatever precedes the first `/`, `?` or `#`, minus any
 /// userinfo and port.
 fn host_is_local(authority: &str) -> bool {
-    let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = match authority.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
-        _ => authority,
+    // Parse the authority with the parser that performs the request,
+    // never by hand. std's IpAddr accepts a dotted quad and nothing
+    // else, so the hand-written test called `127.1`, `2130706433`,
+    // `0x7f000001` and `0177.0.0.1` remote. The URL parser applies the
+    // WHATWG rules and resolves all four to 127.0.0.1, so the fetch
+    // reached the reader's own machine through a guard written to
+    // refuse exactly that.
+    let Ok(parsed) = url::Url::parse(&format!("http://{authority}")) else {
+        return false;
     };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let host = host.trim_end_matches('.');
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+    match parsed.host() {
+        Some(url::Host::Domain(name)) => name.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(v4)) => address_is_local(std::net::IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => match v6.to_ipv4_mapped() {
+            // `[::ffff:127.0.0.1]` reaches the same service as
+            // `127.0.0.1`, and is_loopback answers false for it.
+            Some(v4) => address_is_local(std::net::IpAddr::V4(v4)),
+            None => address_is_local(std::net::IpAddr::V6(v6)),
+        },
+        None => false,
+    }
+}
+
+/// True when an address reaches a service on this machine.
+///
+/// Loopback is the obvious half. The unspecified address is the other:
+/// a connection to `0.0.0.0` or `[::]` reaches a local listener, so a
+/// declaration naming it is a declaration naming this machine.
+fn address_is_local(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback() || ip.is_unspecified()
 }
 
 /// True when a source names a location this machine reaches over a
@@ -322,18 +357,30 @@ impl StoreSource {
     /// directories. `../a` in a dependency names the root store itself,
     /// which is how a mutual cycle closes.
     pub fn identity(&self, located: Option<&Path>, origin_of: &dyn OriginLookup) -> StoreId {
+        // A URL identifies a store wherever it is read from. A local
+        // location does not: `git: ../shared` in two different stores
+        // names two different directories, and keying both on the
+        // declared text collapsed them into one member, so a reference
+        // in the second store resolved into the first store's
+        // documents. Only a real URL takes the URL key; every local
+        // spelling falls through to the resolved-location key below.
         match self {
-            StoreSource::Git { url, .. } => return StoreId(canonical_url(url)),
-            StoreSource::Blob { url } => return StoreId(format!("blob:{}", canonical_url(url))),
-            StoreSource::Path(_) => {}
+            StoreSource::Git { url, .. } if is_remote_url(url) => {
+                return StoreId(canonical_url(url));
+            }
+            StoreSource::Blob { url } if is_remote_url(url) => {
+                return StoreId(format!("blob:{}", canonical_url(url)));
+            }
+            _ => {}
         }
         let Some(dir) = located else {
             // Unresolvable: fall back to the declared text so repeated
             // declarations of the same missing path stay one member.
-            let StoreSource::Path(p) = self else {
-                unreachable!("git handled above")
+            let declared = match self {
+                StoreSource::Path(p) => p.display().to_string(),
+                StoreSource::Git { url, .. } | StoreSource::Blob { url } => url.clone(),
             };
-            return StoreId(format!("unresolved:{}", p.display()));
+            return StoreId(format!("unresolved:{declared}"));
         };
         if let Some(url) = origin_of.origin_url(dir) {
             return StoreId(canonical_url(&url));
@@ -725,6 +772,52 @@ impl StoreContent {
         }
     }
 
+    /// The subdirectory names under one directory of this store.
+    ///
+    /// A store may be content somebody else controls, so a link is
+    /// skipped by dirent type rather than followed. One implementation
+    /// answers for a local directory and for a git tree: a copy per
+    /// consumer is a copy that can miss the link test, which is how a
+    /// symlinked project directory let a tracker read and write
+    /// outside its own root.
+    ///
+    /// Names starting with a dot are omitted. The result is sorted.
+    #[must_use]
+    pub fn subdirectories(&self, subdir: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        match self {
+            StoreContent::Dir(root) => {
+                let Ok(entries) = std::fs::read_dir(root.join(subdir)) else {
+                    return names;
+                };
+                names.extend(
+                    entries
+                        .flatten()
+                        // file_type() reads the dirent, so it does not
+                        // follow a link.
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
+                        .filter_map(|e| e.file_name().to_str().map(ToString::to_string))
+                        .filter(|n| !n.starts_with('.')),
+                );
+            }
+            StoreContent::GitTree { cache, rev, .. } => {
+                // A git tree holds objects, so no link can leave it.
+                if let Ok(paths) = crate::git::list_tree(cache, rev, subdir) {
+                    for path in paths {
+                        if let Some((name, _)) = path.split_once('/')
+                            && !name.starts_with('.')
+                            && !names.iter().any(|n| n == name)
+                        {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        names.sort();
+        names
+    }
+
     /// The `.md` files of a subdirectory, with their stems.
     ///
     /// A directory scan skips every entry that is not a regular file. A
@@ -956,8 +1049,8 @@ impl StoreGraph {
                 // exempt: a person declaring their own dependencies may
                 // name anything on their own machine.
                 if cursor != 0
-                    && let StoreSource::Path(p) = &decl.source
-                    && let Some(reason) = anchored_to_one_machine(p)
+                    && let Some(p) = on_machine_location(&decl.source)
+                    && let Some(reason) = anchored_to_one_machine(&p)
                 {
                     findings.push(format!(
                         "store '{}' declares {reason} ('{}'); a dependency must declare a \
@@ -1897,6 +1990,121 @@ mod tests {
         assert!(format!("{err}").contains("not a regular file"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn every_spelling_of_this_machine_is_local() {
+        // The URL parser that performs the fetch resolves all of these
+        // to 127.0.0.1. The hand-written test called them remote.
+        for spelling in [
+            "http://127.1/kb",
+            "http://2130706433/kb",
+            "http://0x7f000001/kb",
+            "http://0177.0.0.1/kb",
+            "http://127.0.0.1./kb",
+        ] {
+            assert!(!is_remote_url(spelling), "{spelling} names this machine");
+        }
+        // A connection to the unspecified address reaches a local
+        // listener, and is_loopback answers false for it.
+        for spelling in ["http://0.0.0.0/kb", "http://[::]/kb"] {
+            assert!(!is_remote_url(spelling), "{spelling} names this machine");
+        }
+        // The IPv4-mapped form reaches the same service as the plain one.
+        assert!(!is_remote_url("http://[::ffff:127.0.0.1]/kb"));
+
+        // A real host stays remote.
+        assert!(is_remote_url("https://example.com/kb"));
+        assert!(is_remote_url("https://127.0.0.1.example.com/kb"));
+        assert!(is_remote_url("https://8.8.8.8/kb"));
+    }
+
+    #[test]
+    fn a_symlinked_subdirectory_is_skipped() {
+        let base = std::env::temp_dir().join(format!("mdstore-subdirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("store/docs/real")).unwrap();
+        std::fs::create_dir_all(base.join("outside/secret")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("store/docs/linked")).unwrap();
+        std::fs::create_dir_all(base.join("store/docs/.hidden")).unwrap();
+
+        let content = StoreContent::Dir(base.join("store"));
+        assert_eq!(content.subdirectories("docs"), vec!["real".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn two_local_git_sources_are_two_members() {
+        // `git: ../shared` in two different stores names two different
+        // directories. The declared text keyed both, so the second
+        // silently answered with the first one's documents.
+        let base = std::env::temp_dir().join(format!("mdstore-localgit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("a")).unwrap();
+        std::fs::create_dir_all(base.join("b")).unwrap();
+
+        let a = StoreSource::Git {
+            url: "../shared".into(),
+            rev: None,
+        };
+        let b = StoreSource::Git {
+            url: "../shared".into(),
+            rev: None,
+        };
+        assert_ne!(
+            a.identity(Some(&base.join("a")), &NoOrigins),
+            b.identity(Some(&base.join("b")), &NoOrigins),
+            "two directories are two members"
+        );
+        // One directory reached twice stays one member.
+        assert_eq!(
+            a.identity(Some(&base.join("a")), &NoOrigins),
+            b.identity(Some(&base.join("a")), &NoOrigins)
+        );
+        // A real URL still identifies the store wherever it is read.
+        let remote = StoreSource::Git {
+            url: "https://example.com/org/kb".into(),
+            rev: None,
+        };
+        assert_eq!(
+            remote.identity(Some(&base.join("a")), &NoOrigins),
+            remote.identity(Some(&base.join("b")), &NoOrigins)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_local_location_is_refused_under_every_key() {
+        // The round-two critical, reopened at the git:/blob: call site:
+        // a dependency naming an absolute path passes when the guard
+        // narrows to StoreSource::Path first.
+        for source in [
+            StoreSource::Path("/Users/someone/private".into()),
+            StoreSource::Git {
+                url: "/Users/someone/private".into(),
+                rev: None,
+            },
+            StoreSource::Blob {
+                url: "file:///Users/someone/private".into(),
+            },
+        ] {
+            let located = on_machine_location(&source).expect("names this machine");
+            assert!(
+                anchored_to_one_machine(&located).is_some(),
+                "{source:?} must be refused"
+            );
+        }
+
+        // A relative path travels with a copy of the working area.
+        assert!(on_machine_location(&StoreSource::Path("../sibling".into()))
+            .is_some_and(|p| anchored_to_one_machine(&p).is_none()));
+        // A real URL names no location here.
+        assert!(on_machine_location(&StoreSource::Git {
+            url: "https://example.com/org/kb".into(),
+            rev: None
+        })
+        .is_none());
     }
 
     #[test]
