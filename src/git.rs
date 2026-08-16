@@ -143,6 +143,7 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     let dir = cache_dir(url);
     if dir.join("HEAD").exists() {
         ensure_slot_matches(&dir, url)?;
+        sweep_staging(&dir);
         return Ok(dir);
     }
     let source = classify(url)?;
@@ -169,6 +170,25 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
         std::fs::rename(&staging, &dir)?;
     }
     Ok(dir)
+}
+
+/// Once a slot is present, every `<slot>.tmp-*` sibling is an orphan
+/// from an interrupted create: a peer that finds the slot present drops
+/// its own staging anyway. Best effort; nothing depends on it.
+fn sweep_staging(dir: &Path) {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let prefix = format!("{name}.tmp-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// The slot name merges https, scp, and `.git` spellings of one repository.
@@ -255,10 +275,7 @@ fn fetch_network(dir: &Path, url: gix::Url) -> Result<Vec<(gix::ObjectId, String
         .connect(gix::remote::Direction::Fetch)
         .map_err(|e| gix_err("fetch", e))?
         .with_credentials(credential_fn())
-        .prepare_fetch(
-            gix::progress::Discard,
-            gix::remote::ref_map::Options::default(),
-        )
+        .prepare_fetch(gix::progress::Discard, fetch_ref_map_options()?)
         .map_err(|e| gix_err("fetch", e))?
         .receive(gix::progress::Discard, &AtomicBool::new(false))
         .map_err(|e| gix_err("fetch", e))?;
@@ -276,15 +293,16 @@ fn fetch_network(dir: &Path, url: gix::Url) -> Result<Vec<(gix::ObjectId, String
             heads.push((id.to_owned(), local.to_string()));
         }
     }
+    // A head or tag the remote no longer has is deleted: the slot is a
+    // mirror, so `git fetch --prune --prune-tags` is the model.
     let mut deletes = Vec::new();
-    let refs = repo.references().map_err(|e| gix_err("fetch", e))?;
-    for r in refs
-        .prefixed("refs/heads/")
-        .map_err(|e| gix_err("fetch", e))?
-    {
-        let r = r.map_err(|e| gix_err("fetch", e))?;
-        if !keep.contains(r.name().as_bstr()) {
-            deletes.push(delete_edit(r.name().to_owned()));
+    for prefix in ["refs/heads/", "refs/tags/"] {
+        let refs = repo.references().map_err(|e| gix_err("fetch", e))?;
+        for r in refs.prefixed(prefix).map_err(|e| gix_err("fetch", e))? {
+            let r = r.map_err(|e| gix_err("fetch", e))?;
+            if !keep.contains(r.name().as_bstr()) {
+                deletes.push(delete_edit(r.name().to_owned()));
+            }
         }
     }
     // HEAD follows the remote's HEAD when the remote says where it
@@ -311,6 +329,20 @@ fn fetch_network(dir: &Path, url: gix::Url) -> Result<Vec<(gix::ObjectId, String
         .map_err(|e| gix_err("prune", e))?;
     ensure_refs_dir(dir)?;
     Ok(heads)
+}
+
+/// The ref map asks for HEAD as well as the heads and tags the refspec
+/// covers. Over protocol v2 the server advertises only the requested
+/// prefixes, and `refs/heads/` does not cover HEAD, so without this the
+/// remote's HEAD is never seen and the slot's HEAD could not follow it.
+fn fetch_ref_map_options() -> Result<gix::remote::ref_map::Options> {
+    let head = gix::refspec::parse("HEAD".into(), gix::refspec::parse::Operation::Fetch)
+        .map_err(|e| gix_err("refspec", e))?
+        .to_owned();
+    Ok(gix::remote::ref_map::Options {
+        extra_refspecs: vec![head],
+        ..Default::default()
+    })
 }
 
 fn delete_edit(name: gix::refs::FullName) -> gix::refs::transaction::RefEdit {
@@ -453,17 +485,21 @@ fn mirror_local(
         copier.copy(id)?;
     }
 
-    // 3. Refs: every source head upserted, every other dst head deleted.
-    let names: std::collections::BTreeSet<_> = heads.iter().map(|(n, _)| n.clone()).collect();
+    // 3. Refs: every source head and tag upserted, every other dst head
+    //    or tag deleted. The slot is a mirror.
+    let names: std::collections::BTreeSet<_> =
+        heads.iter().chain(&tags).map(|(n, _)| n.clone()).collect();
     let mut edits = Vec::new();
-    let dst_refs = dst.references().map_err(|e| gix_err("mirror", e))?;
-    for r in dst_refs
-        .prefixed("refs/heads/")
-        .map_err(|e| gix_err("mirror", e))?
-    {
-        let r = r.map_err(|e| gix_err("mirror", e))?;
-        if !names.contains(r.name()) {
-            edits.push(delete_edit(r.name().to_owned()));
+    for prefix in ["refs/heads/", "refs/tags/"] {
+        let dst_refs = dst.references().map_err(|e| gix_err("mirror", e))?;
+        for r in dst_refs
+            .prefixed(prefix)
+            .map_err(|e| gix_err("mirror", e))?
+        {
+            let r = r.map_err(|e| gix_err("mirror", e))?;
+            if !names.contains(r.name()) {
+                edits.push(delete_edit(r.name().to_owned()));
+            }
         }
     }
     for (name, id) in heads.iter().chain(&tags) {
@@ -1088,9 +1124,19 @@ mod tests {
             resolve_rev(&dir, Some("blob-tag")).is_err(),
             "a blob tag is not a commit"
         );
-        // A later fetch keeps the same properties.
+        // A later fetch keeps the same properties, and a tag the source
+        // dropped is pruned.
+        let v1: gix::refs::FullName = "refs/tags/v1".try_into().unwrap();
+        repo.edit_reference(delete_edit(v1)).unwrap();
+        let orphan = dir.with_extension("tmp-424242");
+        std::fs::create_dir_all(&orphan).unwrap();
         fetch(&url).unwrap();
         assert_eq!(resolve_rev(&dir, Some("v2")).unwrap(), c2.to_string());
+        assert!(
+            resolve_rev(&dir, Some("v1")).is_err(),
+            "a deleted tag is pruned"
+        );
+        assert!(!orphan.exists(), "an orphan staging dir is swept");
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 
@@ -1172,6 +1218,10 @@ mod tests {
         assert_eq!(resolve_rev(&dir, None).unwrap(), head);
         assert!(dir.join("FETCH_HEAD").exists());
         assert!(is_cached(url), "the slot opens after a fetch too");
+        // HEAD follows the remote: point the slot's HEAD elsewhere, and
+        // a fetch puts it back from the advertised symref.
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/no-such-branch\n").unwrap();
+        fetch(url).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("HEAD")).unwrap().trim(),
             "ref: refs/heads/master"
