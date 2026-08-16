@@ -33,6 +33,13 @@ url = "2"
 rand = "0.10.0"
 cap-std = "4.0.2"
 
+# The passwd database, for the home directory that anchors the user
+# config path. $HOME is repo-settable (direnv, mise), and the user
+# config names where writes land, so it never comes from the
+# environment.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["user"] }
+
 [features]
 default = []
 # The MCP scaffold. Off by default: a consumer that only builds a CLI

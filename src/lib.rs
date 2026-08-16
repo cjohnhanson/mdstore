@@ -7,10 +7,12 @@ pub mod git;
 pub mod mcp;
 pub mod provenance;
 pub mod registry;
+pub mod resolve;
 pub mod selector;
 pub mod slug;
 pub mod snapshot;
 pub mod store;
+pub mod userconfig;
 
 pub use document::{Document, parse, serialize};
 pub use error::{Error, Result};
