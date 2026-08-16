@@ -32,3 +32,7 @@ Writes to remote stores; a store that is a remote; sync of writes.
 ## Related
 
 gaff: `githook::hooks_dir` and `handler` kill. almanac: `vendor.rs`, `ops.rs` diff. clc: `supervisor.rs` `sh -c claude`.
+
+## Scratch Notes
+
+2026-08-16: built. mdstore git.rs on gix (local mirror by object copy; https/git:// via gix transports; ssh refused), blob.rs https on reqwest (s3/gs refused — decision, reversible). Design workflow attacks found: fetch read slot config (fixed: remote from declared URL), tags dropped (fixed), detached HEAD hole (fixed), init_bare not isolated (fixed), error chain (fixed). Tests: 136 unit + ignored network test run once green; zettel 25 / tisket 28 / almanac 7 missouri paths green. gaff dfbda1a, almanac 0970d4a+411d8e5, clc 0e02847 (archived remote; local only). QA workflow next, then push all, co.d bump, hms.
