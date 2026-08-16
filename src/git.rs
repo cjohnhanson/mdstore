@@ -582,9 +582,10 @@ pub fn origin_url(path: &Path) -> Option<String> {
 /// The credential source for https, in-process: userinfo in the URL,
 /// then git-credential-store's file. No helper program runs and nothing
 /// prompts. gix asks only after a 401, so a public store never gets here.
+/// Public so a consumer that fetches with gix itself uses the same one.
 // The error type is gix's; its size is not this crate's to shrink.
 #[allow(clippy::result_large_err)]
-fn credential_fn()
+pub fn credential_fn()
 -> impl FnMut(gix::credentials::helper::Action) -> gix::credentials::protocol::Result {
     |action| {
         let Some(ctx) = action.context() else {
