@@ -457,6 +457,95 @@ mod tests {
     }
 }
 
+// -- Tool arguments --
+
+/// One optional string argument from a tool call.
+///
+/// Three answers, never two: absent, present as a string, or present
+/// as something else. Reading it with `as_str().map(...)` collapses
+/// the third into the first, so a filter of the wrong type was
+/// dropped and the caller got unfiltered data marked as success.
+///
+/// The name of the tool is not needed here: a wrong type is a caller
+/// mistake about this argument, whichever tool holds it.
+pub fn optional_str<'a>(
+    args: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> std::result::Result<Option<&'a str>, ArgError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(v)) => Ok(Some(v.as_str())),
+        Some(_) => Err(ArgError::WrongType {
+            key: key.to_string(),
+        }),
+    }
+}
+
+/// One required string argument from a tool call.
+pub fn required_str<'a>(
+    args: &'a serde_json::Map<String, serde_json::Value>,
+    tool: &str,
+    key: &str,
+) -> std::result::Result<&'a str, ArgError> {
+    match optional_str(args, key)? {
+        Some(v) => Ok(v),
+        None => Err(ArgError::Missing {
+            tool: tool.to_string(),
+            key: key.to_string(),
+        }),
+    }
+}
+
+/// What was wrong with a tool argument.
+///
+/// A missing argument and a mistyped one are different mistakes, and
+/// reporting either as "not found" sends the caller looking for the
+/// wrong problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArgError {
+    Missing { tool: String, key: String },
+    WrongType { key: String },
+}
+
+impl std::fmt::Display for ArgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing { tool, key } => write!(f, "{tool} needs the '{key}' argument"),
+            Self::WrongType { key } => write!(f, "'{key}' must be a string"),
+        }
+    }
+}
+
+impl std::error::Error for ArgError {}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn an_optional_argument_has_three_answers() {
+        let a = args(json!({"tag": "bug", "count": 3, "nothing": null}));
+        assert_eq!(optional_str(&a, "tag").unwrap(), Some("bug"));
+        assert_eq!(optional_str(&a, "absent").unwrap(), None);
+        assert_eq!(optional_str(&a, "nothing").unwrap(), None);
+        assert!(optional_str(&a, "count").is_err());
+    }
+
+    #[test]
+    fn a_missing_argument_is_not_a_wrong_one() {
+        let a = args(json!({"count": 3}));
+        let missing = required_str(&a, "the_tool", "id").unwrap_err();
+        assert!(format!("{missing}").contains("needs the 'id' argument"));
+        let wrong = required_str(&a, "the_tool", "count").unwrap_err();
+        assert!(format!("{wrong}").contains("must be a string"));
+    }
+}
+
 // -- Network exposure --
 
 /// True when the bind address listens only on this machine.

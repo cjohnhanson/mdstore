@@ -225,6 +225,43 @@ fn resolves_outside(repo_root: &Path, declared: &Path) -> bool {
     !target.starts_with(&root)
 }
 
+/// Why a declared path names one machine, if it does.
+///
+/// A relative path is read against the store that declared it, so it
+/// keeps its meaning wherever that store is copied. These two do not.
+fn anchored_to_one_machine(declared: &Path) -> Option<&'static str> {
+    if declared.is_absolute() {
+        return Some("an absolute path");
+    }
+    if declared.starts_with("~") {
+        return Some("a home-anchored path");
+    }
+    None
+}
+
+/// True when the authority of a URL names this machine.
+///
+/// The host is whatever precedes the first `/`, `?` or `#`, minus any
+/// userinfo and port.
+fn host_is_local(authority: &str) -> bool {
+    let authority = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(authority);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let host = host.trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
 /// True when a source names a location this machine reaches over a
 /// network, and false for anything that resolves on this machine.
 ///
@@ -245,10 +282,19 @@ pub fn declares_a_remote_location(source: &StoreSource) -> bool {
 /// relative path, a bare directory name, and `file:///...`.
 pub fn is_remote_url(value: &str) -> bool {
     if let Some((scheme, rest)) = value.split_once("://") {
-        return !scheme.eq_ignore_ascii_case("file")
-            && !scheme.is_empty()
-            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
-            && !rest.is_empty();
+        if scheme.eq_ignore_ascii_case("file")
+            || scheme.is_empty()
+            || !scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+            || rest.is_empty()
+        {
+            return false;
+        }
+        // A loopback host is this machine wearing a URL. The scheme
+        // alone said "remote", so http://127.0.0.1/... named a service
+        // on the reader's own machine and passed the guard.
+        return !host_is_local(rest);
     }
     // The scp form: user@host:path, with a host that is not a Windows
     // drive letter and a path that does not start the string.
@@ -257,7 +303,7 @@ pub fn is_remote_url(value: &str) -> bool {
             return false; // C:/... is a path
         }
         if let Some((_user, host)) = before.split_once('@') {
-            return !host.is_empty() && !host.contains('/');
+            return !host.is_empty() && !host.contains('/') && !host_is_local(host);
         }
     }
     false
@@ -297,6 +343,44 @@ impl StoreSource {
         }
         let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         StoreId(format!("path:{}", canonical.display()))
+    }
+}
+
+/// The identity of one closure member, with the revision it reads.
+///
+/// Two checkouts of one repository share an origin remote, so they
+/// share the identity above and the dedup collapses them into one
+/// member. That is right when they read the same content and wrong
+/// when they do not: a stable checkout and a feature checkout are two
+/// sets of documents, and the second alias silently read the first
+/// one's notes.
+///
+/// The revision separates them. A git tree carries the revision it was
+/// resolved at; a checkout carries its HEAD. A member with no
+/// revision, such as a plain directory that is not a repository, keeps
+/// the bare identity.
+///
+/// One function answers for every source kind, so a new call site
+/// cannot reintroduce the URL-only key for one of them.
+pub fn member_identity(
+    source: &StoreSource,
+    content: Option<&StoreContent>,
+    located: Option<&Path>,
+    origin_of: &dyn OriginLookup,
+) -> StoreId {
+    let base = source.identity(located, origin_of);
+    let rev = match content {
+        Some(StoreContent::GitTree { rev, .. }) => Some(rev.clone()),
+        // A checkout that is a repository reads whatever its working
+        // tree holds, and HEAD is the closest stable name for that.
+        Some(StoreContent::Dir(dir)) => origin_of
+            .origin_url(dir)
+            .and_then(|_| crate::git::resolve_rev(dir, None).ok()),
+        None => None,
+    };
+    match rev {
+        Some(rev) => StoreId(format!("{}@{rev}", base.0)),
+        None => base,
     }
 }
 
@@ -472,9 +556,19 @@ impl StoresConfig {
             return bad;
         }
         for decl in &self.stores {
-            let StoreSource::Path(p) = &decl.source else {
-                continue;
+            // A git or blob declaration whose value names this machine
+            // is a local path wearing another key, and every clone of
+            // this store would follow it somewhere else or nowhere.
+            let p = match &decl.source {
+                StoreSource::Path(p) => p.clone(),
+                StoreSource::Git { url, .. } | StoreSource::Blob { url } => {
+                    if is_remote_url(url) {
+                        continue;
+                    }
+                    PathBuf::from(url.strip_prefix("file://").unwrap_or(url))
+                }
             };
+            let p = &p;
             let reason = if p.is_absolute() {
                 Some("absolute path".to_string())
             } else if p.starts_with("~") {
@@ -784,8 +878,17 @@ impl StoreGraph {
     /// Walk the declarations from a root store.
     pub fn open(root: &Path, locator: &dyn SourceLocator) -> Result<Self> {
         let root_config = StoresConfig::load(root)?;
-        let root_id =
-            StoreSource::Path(root.to_path_buf()).identity(Some(root), &LookupAdapter(locator));
+        // The root takes its identity the same way every other member
+        // does, revision included. A root keyed without the revision
+        // matched a dependency that carried one, or failed to match a
+        // cycle that closed back onto it.
+        let root_content = StoreContent::Dir(root.to_path_buf());
+        let root_id = member_identity(
+            &StoreSource::Path(root.to_path_buf()),
+            Some(&root_content),
+            Some(root),
+            &LookupAdapter(locator),
+        );
 
         let mut members = vec![Member {
             id: root_id,
@@ -843,6 +946,30 @@ impl StoreGraph {
                     ));
                     continue;
                 }
+
+                // The same published content, checked out locally and
+                // declared with `path:`, is the same third-party
+                // content. Its declarations reach whatever they name.
+                //
+                // A relative path stays in the working area the reader
+                // laid out, and travels with a copy of it. An absolute
+                // or home-anchored path names one machine, so it is
+                // never portable and it is exactly how a vendored store
+                // would name a reader's private one. The root is
+                // exempt: a person declaring their own dependencies may
+                // name anything on their own machine.
+                if cursor != 0
+                    && let StoreSource::Path(p) = &decl.source
+                    && let Some(reason) = anchored_to_one_machine(p)
+                {
+                    findings.push(format!(
+                        "store '{}' declares {reason} ('{}'); a dependency must declare a \
+                         relative path or a URL, because it cannot know this machine",
+                        alias_path.join("/"),
+                        p.display()
+                    ));
+                    continue;
+                }
                 let child_remote = parent_remote
                     || matches!(decl.source, StoreSource::Git { .. } | StoreSource::Blob { .. });
 
@@ -854,20 +981,16 @@ impl StoreGraph {
                         (None, Some(why))
                     }
                 };
-                let id = decl.source.identity(
+                // Two consumers may read one repository at different
+                // revisions, whether they pin it or check it out
+                // twice. They are one fetch and two sets of documents,
+                // so the closure holds two members.
+                let id = member_identity(
+                    &decl.source,
+                    content.as_ref(),
                     content.as_ref().and_then(|c| c.dir()),
                     &LookupAdapter(locator),
                 );
-                // Two consumers may pin one repository at different
-                // revisions. They are one fetch and two sets of
-                // documents, so the closure holds two members. Keying
-                // on the URL alone made the first pin answer for both,
-                // and a document that exists only at the other pin then
-                // read as a broken link.
-                let id = match content.as_ref() {
-                    Some(StoreContent::GitTree { rev, .. }) => StoreId(format!("{}@{rev}", id.0)),
-                    _ => id,
-                };
 
                 if let Some(existing) = members.iter().position(|m| m.id == id) {
                     // Already in the closure under a nearer alias path,
@@ -1744,6 +1867,45 @@ mod tests {
         assert!(format!("{err}").contains("not a regular file"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_loopback_url_is_not_a_remote_location() {
+        // The scheme said remote; the host is this machine.
+        assert!(!is_remote_url("http://127.0.0.1/kb"));
+        assert!(!is_remote_url("http://localhost:8080/kb"));
+        assert!(!is_remote_url("https://LOCALHOST/kb"));
+        assert!(!is_remote_url("http://[::1]:9000/kb"));
+        assert!(!is_remote_url("http://localhost./kb"));
+        assert!(!is_remote_url("git@localhost:org/kb"));
+        assert!(!is_remote_url("ssh://git@127.0.0.1/org/kb"));
+
+        // Userinfo does not smuggle a host past the check.
+        assert!(!is_remote_url("https://example.com@127.0.0.1/kb"));
+        assert!(is_remote_url("https://127.0.0.1.example.com/kb"));
+        assert!(is_remote_url("https://example.com/kb"));
+    }
+
+    #[test]
+    fn a_dependency_may_not_declare_a_path_anchored_to_one_machine() {
+        assert_eq!(anchored_to_one_machine(Path::new("../sibling")), None);
+        assert_eq!(anchored_to_one_machine(Path::new("nested/store")), None);
+        assert!(anchored_to_one_machine(Path::new("/Users/someone/private")).is_some());
+        assert!(anchored_to_one_machine(Path::new("~/private")).is_some());
+    }
+
+    #[test]
+    fn a_shared_store_may_not_hide_a_local_path_under_git_or_blob() {
+        let config: StoresConfig = yaml_serde::from_str(
+            "shared: true\nstores:\n  \
+             - alias: ok\n    git: https://example.com/org/kb\n  \
+             - alias: sneaky\n    git: /Users/someone/private\n  \
+             - alias: filed\n    blob: file:///Users/someone/private\n",
+        )
+        .unwrap();
+        let bad = config.unshareable(Path::new("/repo"));
+        let aliases: Vec<&str> = bad.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(aliases, vec!["sneaky", "filed"], "{bad:?}");
     }
 
     #[test]
