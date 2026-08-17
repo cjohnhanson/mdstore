@@ -103,6 +103,17 @@ referring document, never through the vantage store's table.
 the link graph over them. It answers `forward`, `backlinks`,
 `neighborhood`, `orphans`, and `missing`.
 
+## The user layer
+
+`~/.config/mdstore/config.yml` holds one key, `root_store`: the user's
+private store, the fallback vantage for a read that finds no store at
+or above its working directory. A write never falls back. The path is
+fixed and the home directory comes from the passwd database, never
+`$HOME` or `XDG_CONFIG_HOME`: every environment channel is repo-settable
+(direnv, mise), and this file names where a write can land. Consumers
+expose the resolution as one rule through `mdstore::resolve` and set
+the file with their `store root` subcommand.
+
 ## Sources
 
 A member store can be local or remote:
