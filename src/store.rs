@@ -1075,7 +1075,29 @@ impl StoreGraph {
                         StoreSource::Git { .. } | StoreSource::Blob { .. }
                     );
 
-                let located = locator.locate(&decl.source, &declaring_root);
+                // A relative local git declaration names a repository
+                // next to the store that declared it. The declared
+                // text reached the cache untouched, so `git: ../up` in
+                // two roots keyed one slot and the second root read
+                // the first root's mirror, and the fetch resolved the
+                // path against the process cwd. Resolved here, after
+                // the guards, so a dependency's declaration is still
+                // judged on what it wrote, and everything downstream —
+                // locate, identity, the consumer's sync — sees one
+                // absolute path.
+                let decl_source = match &decl.source {
+                    StoreSource::Git { url, rev } if !is_remote_url(url) => {
+                        let joined = declaring_root.join(url);
+                        let resolved = joined.canonicalize().unwrap_or(joined);
+                        StoreSource::Git {
+                            url: resolved.display().to_string(),
+                            rev: rev.clone(),
+                        }
+                    }
+                    other => other.clone(),
+                };
+
+                let located = locator.locate(&decl_source, &declaring_root);
                 let (content, unavailable) = match located {
                     Ok(c) => (Some(c), None),
                     Err(why) => {
@@ -1101,9 +1123,9 @@ impl StoreGraph {
                 let located_at = content
                     .as_ref()
                     .and_then(|c| c.dir().map(Path::to_path_buf))
-                    .or_else(|| on_machine_location(&decl.source));
+                    .or_else(|| on_machine_location(&decl_source));
                 let id = member_identity(
-                    &decl.source,
+                    &decl_source,
                     content.as_ref(),
                     located_at.as_deref(),
                     &LookupAdapter(locator),
@@ -1147,7 +1169,7 @@ impl StoreGraph {
                 members.push(Member {
                     id,
                     alias_path,
-                    source: decl.source.clone(),
+                    source: decl_source.clone(),
                     content,
                     unavailable,
                     remote: child_remote,

@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- A relative `git:` declaration resolves against the store that
+  declared it. The declared text reached the cache untouched, so
+  `git: ../up` in two roots keyed one slot, the second root read the
+  first root's mirror, and the fetch resolved the path against the
+  process cwd. The walk resolves it once, after the location guards,
+  and locate, identity and a consumer's sync all see one absolute
+  path.
 - An `@` in a local path is not scp syntax. `canonical_url` read any
   scheme-less `@` as `user@host`, so `/x/at1/x@1` and `/x/at2/y@1`
   both keyed the cache slot as `1`, and the lowercasing merged local

@@ -995,6 +995,74 @@ mod tests {
         );
     }
 
+    /// A relative git declaration names a repository next to the
+    /// store that declared it, not next to the process.
+    ///
+    /// The declared text reached the cache untouched, so `git: ../up`
+    /// in two different roots keyed one slot, the second root read the
+    /// first root's mirror, and the fetch itself resolved against the
+    /// process cwd.
+    #[test]
+    fn a_relative_git_declaration_resolves_against_its_store() {
+        let _env = crate::env_lock();
+        let base = scratch("reldecl");
+        for (side, body) in [("A", "alpha"), ("B", "beta")] {
+            let up = base.join(side).join("up");
+            std::fs::create_dir_all(&up).unwrap();
+            let repo = init(&up);
+            commit_files(
+                &repo,
+                &[("notes/which.md", &format!("---\ntitle: {body}\n---\n"))],
+                "one",
+            );
+            let root = base.join(side).join("root");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("stores.yml"),
+                "stores:\n  - alias: up\n    git: ../up\n",
+            )
+            .unwrap();
+        }
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let mut slots = Vec::new();
+        for side in ["A", "B"] {
+            let root = base.join(side).join("root");
+            let graph = crate::store::StoreGraph::open(&root, &crate::store::LocalPaths).unwrap();
+            let up = graph
+                .members
+                .iter()
+                .find_map(|m| match &m.source {
+                    crate::store::StoreSource::Git { url, .. } => Some(url.clone()),
+                    _ => None,
+                })
+                .expect("the declared git member is missing");
+            assert!(
+                std::path::Path::new(&up).is_absolute(),
+                "the declaration left the walk still relative: {up}"
+            );
+            crate::store::sync_source(&crate::store::StoreSource::Git {
+                url: up.clone(),
+                rev: None,
+            })
+            .expect("sync of the resolved declaration failed");
+            let slot = crate::git::cache_dir(&up);
+            let rev = crate::git::resolve_rev(&slot, None).unwrap();
+            let body = crate::git::show(&slot, &rev, "notes/which.md").unwrap();
+            let want = if side == "A" { "alpha" } else { "beta" };
+            assert!(
+                body.contains(want),
+                "{side}'s member read the other root's mirror: {body}"
+            );
+            slots.push(slot);
+        }
+        assert_ne!(
+            slots[0], slots[1],
+            "two different repositories share one slot"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
     /// sync answers for the pin, not only for the fetch.
     ///
     /// fetch never read the declared rev, so a bad pin reported
