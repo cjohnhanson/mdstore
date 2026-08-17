@@ -464,15 +464,21 @@ pub(crate) fn canonical_url_for_cache(url: &str) -> String {
 fn canonical_url(url: &str) -> String {
     let u = url.trim().trim_end_matches('/');
     let u = u.strip_suffix(".git").unwrap_or(u);
-    // git@host:path and https://host/path name the same repository.
-    let stripped = match u.split_once("://") {
-        Some((_, rest)) => rest.to_string(),
-        None => match u.split_once('@') {
-            Some((_, rest)) => rest.replacen(':', "/", 1),
-            None => u.to_string(),
-        },
-    };
-    stripped.to_ascii_lowercase()
+    // git@host:path and https://host/path name the same repository. A
+    // remote spelling folds and lowercases; a local path is neither.
+    if let Some((_, rest)) = u.split_once("://") {
+        return rest.to_ascii_lowercase();
+    }
+    // scp form has a user name before the @, and a user name has no
+    // slash. An @ after a slash is a character in a path: /x/at1/x@1
+    // read as scp kept only "1", so two such paths shared a slot, and
+    // the lowercasing merged local repositories that differ by case.
+    if let Some((user, rest)) = u.split_once('@')
+        && !user.contains('/')
+    {
+        return rest.replacen(':', "/", 1).to_ascii_lowercase();
+    }
+    u.to_string()
 }
 
 /// The canonical identity of a store.
@@ -1323,6 +1329,41 @@ mod tests {
 
     fn aliases(list: &[&str]) -> Aliases {
         Aliases(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// An @ in a local path is not scp syntax.
+    ///
+    /// canonical_url read any scheme-less @ as user@host, kept what
+    /// followed, and lowercased it. /x/at1/x@1 and /x/at2/y@1 both
+    /// became "1" and shared one cache slot, and two local paths
+    /// differing by case merged on a case-sensitive filesystem.
+    #[test]
+    fn a_local_path_with_an_at_sign_is_not_scp_form() {
+        // Two different local declarations stay two slots.
+        let a = canonical_url_for_cache("/x/at1/x@1");
+        let b = canonical_url_for_cache("/x/at2/y@1");
+        assert_ne!(a, b, "two local paths with @ share a slot key");
+        assert_eq!(a, "/x/at1/x@1", "a local path was rewritten: {a}");
+
+        // A relative declaration too.
+        assert_eq!(canonical_url_for_cache("../up@2"), "../up@2");
+
+        // Real scp form still folds onto its https spelling.
+        assert_eq!(
+            canonical_url_for_cache("git@github.com:Owner/Repo.git"),
+            "github.com/owner/repo"
+        );
+        assert_eq!(
+            canonical_url_for_cache("https://GitHub.com/Owner/Repo/"),
+            "github.com/owner/repo"
+        );
+
+        // Case distinguishes local repositories.
+        assert_ne!(
+            canonical_url_for_cache("/p/Case"),
+            canonical_url_for_cache("/p/case"),
+            "case-different local paths merged"
+        );
     }
 
     // -- references --
