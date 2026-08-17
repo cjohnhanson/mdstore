@@ -56,3 +56,24 @@ Tension recorded, not resolved: one URL-to-checkout map served all three tools, 
 2. Three pin bumps, each passing the tool's own name: zettel, tisket, almanac. Each repo gates on review sign-off.
 3. Write `~/.config/{tisket,zettel,almanac}/config.yml`, each with root_store co.d/plaintext, and delete the mdstore one.
 4. co.d carries no store config today, and the root pointer exists only on this machine. Whether it becomes repo-managed is a separate decision, deliberately not folded in here.
+## State 2026-08-17, end of session
+
+mdstore is done and committed. Branch fix/per-tool-user-config, commits 9c6d993 (issue) and 4082571 (change). 183 unit tests plus 1 integration test pass, clippy clean. The guard test was verified by mutation: restoring the library directory in config_path fails it on its own assertion.
+
+What changed: config_path, UserConfig::load, UserConfig::save_root, registry_path, and Registry::load all take the tool name. Both resolve.rs error strings report the caller's path. cache_root is untouched. README rewritten.
+
+Registry::load is not unused after all. Every consumer calls it in workspace.rs, so the earlier note claiming no callers was wrong; the grep covered only the mdstore repo.
+
+Three consumers are changed but uncommitted, in worktrees under ~/Projects/.wt/<tool>-tool-config, branch fix/per-tool-user-config off each main. Patches are saved in the session scratchpad. Each carries the same shape: a crate-level TOOL const, VOCAB taking tool from it, the three mdstore calls passing it, docs, and missouri fixture text.
+
+One extra fix, found while editing: store root printed a literal config path, so --user-config made the shown path a lie. It now prints the file that was read. almanac needed a redundant clone removed, because the match borrows where it used to move.
+
+Verified against the mdstore branch through a path dependency: zettel 43 tests, tisket 19, almanac 77, each fmt and clippy clean. almanac missouri 9 passed 0 failed.
+
+Blocked, filed as 6wsp: zettel and tisket each fail one remote-sync missouri path when built against mdstore main. Both failures reproduce on unmodified main with no consumer change, so they are pre-existing in the pin gap and not caused by this work. Suspect 0ff1d22, unbisected.
+
+The consumer commits cannot be made yet. Each repo's commit gate runs clippy, and the code does not compile against the old pinned mdstore. The pin cannot move until mdstore lands on origin main, which needs a pull request.
+
+Note on the working trees: ~/Projects/mdstore moved from refactor/split-review-check to gate/split-review-check mid-session, which broke one build that pointed at it. Builds now point at the ~/Projects/.wt/mdstore-per-tool worktree, which is stable.
+
+Next, in order: land mdstore, then bump each pin to the merged commit, then commit each consumer, then write the three per-tool config files and delete ~/.config/mdstore/config.yml.
