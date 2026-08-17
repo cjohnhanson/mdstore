@@ -16,9 +16,9 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
 
+# Least privilege at the top; each job widens only what it needs.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +31,17 @@ jobs:
 
       # A tag that disagrees with the manifest publishes a version
       # nobody asked for, and the registry keeps it forever.
+      # A tag is the only trigger, and anyone who can push a tag can
+      # point one at any commit. Requiring the commit to be on main
+      # means a release carries what main carries, and nothing else.
+      - name: Check the tag is on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "tag ${GITHUB_REF_NAME} names a commit that is not on main" >&2
+            exit 1
+          fi
+
       - name: Check the tag matches Cargo.toml
         run: |
           manifest="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
@@ -57,6 +68,8 @@ jobs:
   release:
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Create the release
