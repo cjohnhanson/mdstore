@@ -10,6 +10,20 @@ readme = "README.md"
 authors = ["Cody Hanson"]
 keywords = ["markdown", "frontmatter", "yaml", "document-store", "storage"]
 categories = ["parser-implementations", "text-processing", "filesystem"]
+# Repository machinery belongs on GitHub. A consumer installing the
+# crate gets the source, the license, the changelog, and the two
+# documents that concern them: the README and the security policy.
+exclude = [
+    ".tisket/",
+    "tisket.yml",
+    ".gaff/",
+    ".github/",
+    "scripts/",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    ".editorconfig",
+    "rust-toolchain.toml",
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
