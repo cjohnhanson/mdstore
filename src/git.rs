@@ -1247,6 +1247,57 @@ mod tests {
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 
+    /// The pack carries shapes the walk can produce beyond a plain
+    /// commit chain.
+    ///
+    /// The entries pipeline gets ids the walk collected, so anything
+    /// the walk can reach has to survive the round trip: one blob
+    /// reachable by many paths (counted once, by the seen set), an
+    /// empty tree, a tag pointing at a tree, and a nested tag.
+    #[test]
+    fn a_packed_create_carries_every_shape_the_walk_reaches() {
+        let _env = crate::env_lock();
+        let base = scratch("packshapes");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        // The same content under four paths: one blob, four entries.
+        let same = "---\ntitle: Same\n---\nidentical\n";
+        let c1 = commit_files(
+            &repo,
+            &[
+                ("notes/a.md", same),
+                ("notes/b.md", same),
+                ("deep/one/c.md", same),
+                ("deep/two/d.md", same),
+            ],
+            "one",
+        );
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let dir = ensure_clone(&url).unwrap();
+        let rev = resolve_rev(&dir, None).unwrap();
+        assert_eq!(rev, c1.to_string());
+        for path in ["notes/a.md", "notes/b.md", "deep/one/c.md", "deep/two/d.md"] {
+            assert_eq!(show(&dir, &rev, path).unwrap(), same, "{path} lost");
+        }
+        // Every path is listed, so no tree entry went missing.
+        let listed = list_tree(&dir, &rev, "deep").unwrap();
+        assert_eq!(listed.len(), 2, "a subtree lost entries: {listed:?}");
+
+        // The slot verifies as a whole: the pack's index and every
+        // object it claims.
+        let slot = gix::open_opts(&dir, gix::open::Options::isolated()).unwrap();
+        for path in ["notes/a.md", "deep/one/c.md"] {
+            let id = slot
+                .rev_parse_single(format!("{rev}:{path}").as_str())
+                .expect("an object the pack should hold is unreachable");
+            assert!(slot.find_object(id).is_ok(), "{path} is indexed but absent");
+        }
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
     /// A file:// declaration is already absolute and stays untouched.
     ///
     /// The rewrite path-joined it, because is_remote_url is
