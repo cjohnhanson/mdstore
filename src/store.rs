@@ -2358,6 +2358,15 @@ mod tests {
             content.scan("nosuchdir").unwrap().entries.is_empty(),
             "a missing directory inside the store must not be an error"
         );
+        // A climb through a directory that does not exist. The
+        // operating system answers NotFound before it evaluates the
+        // climb, and the missing-directory arm swallowed the refusal.
+        assert!(
+            content
+                .scan("docs/a/b/../../../../outside/secret.md")
+                .is_err(),
+            "a climb through a missing directory was answered empty"
+        );
         assert!(
             !content.subdirectories("..").iter().any(|n| n == "outside"),
             "a climbing listing named a sibling of the store"

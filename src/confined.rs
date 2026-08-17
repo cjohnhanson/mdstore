@@ -78,6 +78,17 @@ impl StoreDir {
     /// operating system refuses it. Reading it as "." made a scan of
     /// the root return no documents, and the NotFound arm hid that as
     /// an empty store.
+    /// True when the path names a parent at any point.
+    ///
+    /// A climb may still land inside the store, and the handle decides
+    /// that. This only says the question was asked, which is enough to
+    /// tell a missing directory from a refused escape.
+    fn climbs(rel: &str) -> bool {
+        Path::new(rel)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    }
+
     fn at(rel: &str) -> &str {
         if rel.is_empty() { "." } else { rel }
     }
@@ -255,7 +266,15 @@ impl StoreDir {
             Ok(entries) => entries,
             // A store with no document directory yet holds no
             // documents. That is not a failure.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(scan),
+            //
+            // A climbing path is a different thing. When a leading
+            // component is missing, the operating system answers
+            // NotFound before it evaluates the climb, so this arm
+            // turned a refusal into a silent empty result. A path that
+            // tries to leave is refused whether or not it arrives.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !Self::climbs(rel) => {
+                return Ok(scan);
+            }
             Err(e) => return Err(self.io_error(rel, &e)),
         };
 
@@ -549,6 +568,57 @@ mod tests {
             scan.skipped
                 .iter()
                 .any(|(p, _)| p.to_string_lossy().contains("pipe"))
+        );
+
+        // The reason the regular-file guard exists. Opening a FIFO to
+        // read blocks until a writer arrives, and no writer is coming,
+        // so a read without the guard never returns. The read runs on
+        // its own thread because a hang here would hang the suite.
+        let store = f.store.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(store.read("docs/pipe.md").is_err());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(refused) => assert!(refused, "a fifo was read as a document"),
+            Err(_) => panic!("read on a fifo blocked; the regular-file guard is gone"),
+        }
+    }
+
+    /// The reason the handle is held rather than re-derived.
+    ///
+    /// A path re-opened per operation resolves through ambient
+    /// authority every time. Swapping the root between two reads then
+    /// redirects the second one. An open handle names the directory
+    /// itself, so the swap has nothing to catch.
+    #[test]
+    fn a_swapped_root_does_not_redirect_an_open_store() {
+        let f = Fixture::new("swap");
+        assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
+
+        // Move the real store aside and put a link to a decoy at the
+        // name the store was opened under.
+        std::fs::create_dir_all(f.base.join("decoy/docs")).unwrap();
+        std::fs::write(f.base.join("decoy/docs/note.md"), "SWAPPED").unwrap();
+        std::fs::rename(f.base.join("store"), f.base.join("store-moved")).unwrap();
+        std::os::unix::fs::symlink(f.base.join("decoy"), f.base.join("store")).unwrap();
+
+        assert_eq!(
+            f.store.read("docs/note.md").unwrap(),
+            "a note",
+            "the swapped root redirected a read on an open store"
+        );
+
+        f.store.write("docs/note.md", "written").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.base.join("store-moved/docs/note.md")).unwrap(),
+            "written",
+            "a write landed outside the store the handle was opened on"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.base.join("decoy/docs/note.md")).unwrap(),
+            "SWAPPED",
+            "a write reached the decoy"
         );
     }
 
