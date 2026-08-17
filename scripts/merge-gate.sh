@@ -21,8 +21,11 @@ set -e
 # see EOF, and the gate would pass with nothing checked.
 gate_refs=$(cat)
 
+# --all-features, because a feature that is off by default is still
+# code that ships. Without it the mcp module, which serves a store to a
+# network client, was never compiled by the gate.
 echo "merge-gate: cargo test"
-cargo test --workspace --quiet >/dev/null </dev/null || {
+cargo test --workspace --all-features --quiet >/dev/null </dev/null || {
   echo "merge-gate: cargo test failed. Nothing merges on red tests." >&2
   exit 1
 }
