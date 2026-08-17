@@ -1,0 +1,8 @@
+Five independent reviewers read this branch cold: whether the review requirement can be defeated, whether it works end to end, the release workflows, prose, and the design. All five returned do-not-merge. Every finding below was reproduced before it was fixed.
+
+Three blockers. A botched edit left a deleted script in the gate pipeline, so every push exited 127 after running the full suite. A POSIX pipeline exits with its last command, so the check's refusal was discarded whatever followed it. And three environment variables set in a plain shell, with a payload file, pushed an unreviewed commit past the gate against a bare remote.
+
+Also fixed: empty stdin passed as ok; the event payload was string-searched rather than parsed, so a nested object won and an absent head.sha fell through to base.sha; almanac and zettel were still named after crates.io names owned by other projects; the release workflow trusted any tag from any commit; permissions were workflow-scoped; the release skipped the missouri suite the merge gate requires.
+
+signoff[fresh-eyes] PASS 7ebf60c five lenses read the diff cold and every blocker was reproduced against a throwaway repo and bare remote before any fix
+signoff[mutation] PASS 7ebf60c five guards mutated one at a time, each turning one named test red: the FAIL verdict, the commit binding, the evidence floor, the duplicate check, and the line anchoring
