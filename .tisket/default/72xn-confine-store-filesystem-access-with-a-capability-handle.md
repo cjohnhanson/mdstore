@@ -356,3 +356,35 @@ is why this scratch is being written from ~/Projects/.wt/mdstore-issues.
 
 Recurring: a multi-edit script asserting late and writing nothing.
 Fourth time tonight. One edit per script now, verified by grep.
+## 2026-08-16 23:20 — round three across the board
+
+Every branch went through fail-first this round, and it caught me
+once: the copy_tree assertion in almanac passed with the guard removed
+because the destination sat inside the tree being copied. Red-first
+found it in one run.
+
+Landed nothing this hour. Four reviews open:
+
+- mdstore fix/store-error-keeps-the-kind, first review. tisket needs
+  it. The reviewer is asked to verify the cap-std errno claim from
+  source across every backend, and to say which direction fails safe.
+- mdstore chore/gate-requires-mutation-verified, unreviewed. The gate
+  refuses a review note that does not mention a mutation. Verified
+  against a throwaway repo: no note refused, a read-only note refused,
+  a mutation note accepted.
+- tisket round three. Round two found the fault half untested and a
+  relative in-store link still splitting the layers. Both fixed
+  fail-first. Also: I broke the reviewer's build by switching the
+  mdstore worktree's branch under them. One worktree per branch now.
+- almanac round three. Round two: status called a pipe drift, the
+  scanner guard ate the path-only checks, two guards had no test.
+  Fixed; status pinned by a missouri transition since it prints.
+- zettel round two, running.
+
+Memory: three new entries and one revised. A guard test must fail
+first. A fix covers the mechanism. Worktree means every write. One
+edit per script, verified by grep on the file.
+
+The peer session attributed missouri commits to me a second time; the
+reflog shows every entry is theirs, including the branch rename that
+put them there. Sent it.
