@@ -1,0 +1,83 @@
+# Cutting a release: bump the version in Cargo.toml, commit, tag, push
+# the tag. This runs from the tag.
+#
+# mdstore is a library. It ships no binary, so there is nothing to
+# cross-compile and no archive to attach. The tag creates a GitHub
+# release for the changelog, and the crate goes to the registry.
+#
+# The registry's trusted publishing cannot create a crate that does not
+# exist. The first publish of a name is a manual `cargo publish` with a
+# token. Every release after that runs here.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with the manifest publishes a version
+      # nobody asked for, and the registry keeps it forever.
+      - name: Check the tag matches Cargo.toml
+        run: |
+          manifest="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "$manifest" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml ($manifest)" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+      # Catches a packaging fault before the registry does, when the
+      # version can still change. The exclude list has shipped a crate
+      # that could not build from its own tarball before.
+      - name: Package and build from the tarball
+        run: cargo package --locked
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
