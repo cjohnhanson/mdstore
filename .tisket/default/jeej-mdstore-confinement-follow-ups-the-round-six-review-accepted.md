@@ -60,3 +60,29 @@ Also raised, larger than the rest:
   implementer a path and no handle, on the surface that takes document
   names from a network client. The gate now compiles that module, so
   that work happens under green CI with no structural hint.
+
+## Scratch Notes
+
+## 2026-08-17 — items 1 through 5 and both notes are a branch
+
+fix/accepted-followups, in review:
+
+- One climb rule. A '..' component is refused by every operation, as
+  StorePath with the errno-less PermissionDenied shape, so
+  refused_by_confinement covers a lexical refusal and an OS refusal
+  alike. Items 3 and 4 collapse into this; scan's NotFound tiebreaker
+  is gone because a climb cannot reach it.
+- Module doc names hard links and in-store directory links as
+  uncovered, with the consumer-level mitigations (item 1, item 3's
+  residue).
+- Eight tests gated cfg(unix) (item 2).
+- Scan.skipped documents its 0.3.0 break (item 5).
+- ServeConfig.root states the open-a-StoreDir contract; the field
+  stays a path because a config deserializes (the larger note).
+- at() has its doc back (smaller note 1).
+
+Smaller note 2 was already closed by 0.3.2:
+a_refusal_and_a_permissions_failure_carry_different_kinds pins the
+errno contract directly, on a real escape.
+
+This issue closes when the branch lands.

@@ -1,6 +1,6 @@
 ---
 title: Confine store filesystem access with a capability handle
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
@@ -9,7 +9,7 @@ labels:
 - architecture
 depends_on: []
 created: 2026-08-16T23:05:29Z
-updated: 2026-08-16T23:05:29Z
+updated: 2026-08-17T13:26:03Z
 ---
 
 ## Scratch Notes
