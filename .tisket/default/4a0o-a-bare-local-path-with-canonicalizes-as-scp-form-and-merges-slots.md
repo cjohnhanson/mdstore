@@ -17,3 +17,18 @@ updated: 2026-08-16T21:02:18Z
 ## Fix
 
 Only treat `user@host:path` as scp form when the text before `@` has no `/`; do not lowercase a local path.
+
+## Scratch Notes
+
+## 2026-08-17 — fixed, in review
+
+Branch fix/mirror-packs-the-create, awaiting an independent verdict.
+
+Both halves the issue named are fixed: scp form now requires a user
+name with no slash, and a local path is no longer lowercased.
+
+The first review found the slash test alone was not enough. Every
+mutant of it survived the suite, and an @ in the first path segment
+still collapsed: up@2 and down@2 both keyed 2. scp form now also
+requires the colon git itself requires. Recorded because the issue's
+stated fix was the slash test alone, and it was insufficient.
