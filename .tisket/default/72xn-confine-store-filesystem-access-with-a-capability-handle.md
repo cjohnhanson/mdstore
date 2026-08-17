@@ -409,3 +409,33 @@ putting the bug back. Reviewers found the process failures too: I
 switched a worktree branch under a reviewer's build, and I wrote a
 copy_tree assertion whose destination sat inside the source so it
 passed on the recursion error. Both caught, both fixed.
+## 2026-08-17 01:45 — everything landed
+
+On main, each through its gate with a note naming the mutations that
+killed each guard:
+
+  mdstore  85ba0bd  error kind carried; Error non_exhaustive; the gate
+                    refuses a review note that names no mutation
+  zettel   bfbc746  lazy note handle; containment rechecked at the
+                    open; a fault is loud
+  tisket   85816bf  refusal skipped, fault loud; load_project and
+                    list_projects ask the same two questions
+  almanac  715ed1d  all six pipe doors guarded; status says unreadable;
+                    scanner keeps its path-only checks
+
+Two things the landing taught. A fifteen-minute gate inside a push
+does not survive this machine sleeping or GitHub closing the socket;
+running the gate locally first, then pushing with a warm target, is
+what got the last four through. And two sessions pushing to one main
+race: whichever finishes its suite second is rejected as
+non-fast-forward and reruns everything. tisket lost that race once.
+
+Every fix in the last two rounds was written to fail first. It caught
+one vacuous assertion of mine before a reviewer could, and every
+reviewer still found something a mutation I had not imagined exposed.
+The gate now requires the note to name what was mutated. It cannot
+verify the claim, and says so.
+
+Filed and left, by design: the store-root trust boundary (uq57) and
+the check-then-act races no deterministic test catches (v882). Both
+need a decision, not a patch.
