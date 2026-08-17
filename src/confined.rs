@@ -386,7 +386,20 @@ impl StoreDir {
     /// One error shape, so a message never leaks a path outside the
     /// store and always names the store it refers to.
     fn io_error(&self, rel: &str, e: &std::io::Error) -> Error {
-        Error::InvalidStore(format!("{rel} in {}: {e}", self.root.display()))
+        Error::StorePath {
+            rel: rel.to_string(),
+            root: self.root.display().to_string(),
+            // io::Error is not Clone, so it is rebuilt. The errno is
+            // carried when there is one, because that is what tells a
+            // refusal from a fault: cap-std refuses an escaping path
+            // with its own message and no errno, while a real denial
+            // carries EACCES. Rebuilding from the kind alone lost that
+            // and made the two identical.
+            source: e.raw_os_error().map_or_else(
+                || std::io::Error::new(e.kind(), e.to_string()),
+                std::io::Error::from_raw_os_error,
+            ),
+        }
     }
 }
 
@@ -815,6 +828,52 @@ mod tests {
         assert!(!f.base.join("store/docs/inside").exists());
         assert!(f.base.join("store/docs").is_dir(), "the parent went too");
         assert!(f.outside_is_intact());
+    }
+
+    /// A refusal and a fault must not read the same to a consumer.
+    ///
+    /// The error carried only a string, so a directory the store
+    /// refuses and a directory it cannot read were the same value. A
+    /// consumer that treated the first as an empty store then treated
+    /// a mode-000 directory as empty too, and answered zero documents
+    /// with a success status.
+    #[test]
+    fn a_refusal_and_a_permissions_failure_carry_different_kinds() {
+        let f = Fixture::new("kinds");
+
+        // A path that leaves the store. cap-std refuses it.
+        let escaped = f.store.scan("../outside").unwrap_err();
+        assert!(
+            escaped.refused_by_confinement(),
+            "an escape did not read as a refusal: {escaped}"
+        );
+
+        // A directory inside the store that cannot be read.
+        f.store.create_dir_all("docs/locked").unwrap();
+        let locked = f.base.join("store/docs/locked");
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
+        std::fs::set_permissions(&locked, perms).unwrap();
+
+        // Same kind as the escape. Only the errno separates them, so
+        // a consumer keying on the kind treats a locked directory as
+        // an empty one.
+        let denied = f.store.scan("docs/locked").unwrap_err();
+        assert_eq!(denied.io_kind(), Some(std::io::ErrorKind::PermissionDenied));
+        assert!(
+            !denied.refused_by_confinement(),
+            "a permissions failure read as a refusal: {denied}"
+        );
+
+        // A name that is a file, not a directory. A store holds no
+        // documents there, and that is not a fault.
+        let wrong = f.store.scan("docs/note.md").unwrap_err();
+        assert_eq!(wrong.io_kind(), Some(std::io::ErrorKind::NotADirectory));
+        assert!(!wrong.refused_by_confinement());
+
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&locked, perms).unwrap();
     }
 
     // -- legitimate use --

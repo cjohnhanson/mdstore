@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+### Added
+
+- `Error::refused_by_confinement` and `Error::io_kind`. A consumer must
+  tell a refusal from a fault: a directory the store refuses holds no
+  documents, and a directory it cannot read is a fault that must not
+  read as empty. cap-std reports both as PermissionDenied, and the
+  errno is what separates them, so the error now carries it.
+
 ## 0.3.1
 
 ### Added
