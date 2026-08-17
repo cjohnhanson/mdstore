@@ -1,7 +1,10 @@
 # The reviews a change must pass before it merges. `gaff reviews`
-# prints them and `gaff reviews check` holds them, so the gate never
-# hard-codes a name. An absent key is an error, because no policy must
-# not read as no review required.
+# prints them and `gaff reviews check` holds them, so no gate
+# hard-codes a name.
+#
+# An absent key means this repo declared no policy, and the check
+# refuses the push. An unknown policy is not an empty one. Write
+# `reviews: []` to require none.
 reviews:
   - fresh-eyes
   - mutation

@@ -1,15 +1,15 @@
 #!/bin/sh
-# The merge gate. These repos merge by direct push, so this pre-push
-# hook is the merge check. A push needs green tests, a green missouri
-# suite, and a review note naming every review the config declares.
+# The merge gate runs on pre-push. Direct push is how these repos
+# merge, so pre-push is the merge check.
 #
-# `gaff reviews check` holds the note requirement. It reads the pushed
-# refs on stdin, and .gaff/gaff.yml states which reviews a change must
-# pass, so no review name appears here.
+# A push needs passing tests and a review note that names every review
+# .gaff/gaff.yml declares. `gaff reviews check` holds the note
+# requirement, so no review name appears here. The missouri suite runs
+# where tests/missouri exists.
 #
-# Two limits worth stating. The suites test the working tree, not the
-# pushed commit. And a pre-push hook is advisory: `--no-verify` skips
-# it, so the required CI check is what actually enforces this.
+# The suites test the working tree, not the pushed commit. A pre-push
+# hook is also advisory, because `--no-verify` skips it, so the
+# required CI check is what enforces this.
 set -e
 
 # git sends the ref list on stdin. The first reader spends the stream.

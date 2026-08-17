@@ -81,7 +81,7 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --generate-notes
 
-  publish:
+  publish-crate:
     needs: release
     runs-on: ubuntu-latest
     permissions:
