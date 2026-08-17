@@ -1,0 +1,33 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the two commits making the gate refuse a review note that names no mutation.
+
+Verdict LAND on this tip, 85ba0bd.
+
+Two rounds. Round one returned DO-NOT-LAND on a regression the change
+introduced: capturing the note into a variable made a missing note
+fail silently under set -e, so the most common first-contact case
+printed nothing. Fixed with || true on the capture.
+
+Round two verified by execution under /bin/sh, dash, and a real
+pre-push hook against a bare remote. Five note cases: none refused
+with the fresh-eyes message; read-only refused with the mutation
+message; a note naming a mutation accepted and the push lands; the two
+negative phrasings accepted, as the header now documents. Exemptions
+unchanged: pushing refs/notes/reviews accepted, a branch deletion
+accepted, an annotated tag gated at the commit it peels to, a notes
+object pushed at a branch refused and now with a message. Multi-ref
+bad-then-good and good-then-bad both refuse and land nothing.
+
+Mutation, killed by the probe: sed the || true back out on a no-note
+tip, and the grep count for the fresh-eyes message drops from 1 to 0.
+Put back, 1. The token is load-bearing.
+
+The stdin capture still precedes everything: a stub runner that eats
+stdin leaves the loop with its ref. The set -e interaction with the
+two greps that follow the now-always-succeeding assignment was checked
+by reading: both sit inside if ! conditions, where set -e is inert.
+
+The check is a claim check. It cannot verify a mutation was applied
+any more than it can verify the reading. The header says so, beside
+the other two known limits, and the reviewer called the framing honest
+so long as a passing gate is never cited as evidence a mutation
+happened.
