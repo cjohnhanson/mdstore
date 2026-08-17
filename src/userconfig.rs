@@ -65,7 +65,18 @@ pub fn passwd_home() -> Option<PathBuf> {
 /// The fixed path of the named tool's user config.
 #[must_use]
 pub fn config_path(tool: &str) -> Option<PathBuf> {
-    passwd_home().map(|h| h.join(format!(".config/{tool}/config.yml")))
+    passwd_home().map(|h| config_path_in(&h, tool))
+}
+
+/// The same path, against an explicit home.
+///
+/// The home is a parameter so a test can watch which directory the read
+/// and the write actually reach. Without it, only `config_path` is
+/// testable, and a wrapper routing to the wrong tool goes unseen: both
+/// `load` and `save_root` once did, under mutation, with the suite
+/// green.
+fn config_path_in(home: &Path, tool: &str) -> PathBuf {
+    home.join(format!(".config/{tool}/config.yml"))
 }
 
 impl UserConfig {
@@ -74,8 +85,13 @@ impl UserConfig {
     /// with the file is an error, never a silent downgrade to
     /// "unconfigured".
     pub fn load(tool: &str) -> Result<Self> {
-        match config_path(tool) {
-            Some(p) => Self::load_from(&p),
+        Self::load_in(passwd_home().as_deref(), tool)
+    }
+
+    /// `load`, against an explicit home. See `config_path_in`.
+    fn load_in(home: Option<&Path>, tool: &str) -> Result<Self> {
+        match home {
+            Some(h) => Self::load_from(&config_path_in(h, tool)),
             None => Ok(Self::default()),
         }
     }
@@ -127,11 +143,17 @@ impl UserConfig {
 
     /// Write `root_store` to the named tool's fixed path, atomically.
     pub fn save_root(tool: &str, root: &Path) -> Result<PathBuf> {
-        let Some(path) = config_path(tool) else {
+        Self::save_root_in(passwd_home().as_deref(), tool, root)
+    }
+
+    /// `save_root`, against an explicit home. See `config_path_in`.
+    fn save_root_in(home: Option<&Path>, tool: &str, root: &Path) -> Result<PathBuf> {
+        let Some(h) = home else {
             return Err(Error::InvalidStore(
                 "no home directory resolves from the passwd database".to_string(),
             ));
         };
+        let path = config_path_in(h, tool);
         Self::save_root_to(&path, root)?;
         Ok(path)
     }
@@ -243,6 +265,41 @@ mod tests {
                 p.display()
             );
         }
+    }
+
+    #[test]
+    fn the_read_and_the_write_route_through_the_tools_directory() {
+        // A decoy in the library's old directory, and the real file in
+        // the tool's. Reading the decoy means the wrapper routed by the
+        // library's name. config_path alone cannot catch that, because
+        // the wrappers each choose the name they pass.
+        let home = scratch("routing");
+        let decoy = home.join(".config").join("mdstore");
+        let real = home.join(".config").join("tisket");
+        std::fs::create_dir_all(&decoy).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(decoy.join("config.yml"), "root_store: /decoy\n").unwrap();
+        std::fs::write(real.join("config.yml"), "root_store: /real\n").unwrap();
+
+        let cfg = UserConfig::load_in(Some(&home), "tisket").unwrap();
+        assert_eq!(
+            cfg.root_store.as_deref(),
+            Some(Path::new("/real")),
+            "load read the wrong tool's file"
+        );
+
+        // The write lands in the tool's directory, and the decoy keeps
+        // its bytes.
+        let store = home.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let written = UserConfig::save_root_in(Some(&home), "zettel", &store).unwrap();
+        assert!(
+            written.ends_with(".config/zettel/config.yml"),
+            "{}",
+            written.display()
+        );
+        let after = std::fs::read_to_string(decoy.join("config.yml")).unwrap();
+        assert_eq!(after, "root_store: /decoy\n", "the write hit the decoy");
     }
 
     #[test]

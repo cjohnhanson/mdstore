@@ -21,6 +21,13 @@ use crate::store::{SourceLocator, StoreContent, StoreSource};
 /// The named tool's registry file. A user overriding a URL edits the
 /// directory of the tool they run, for the same reason the user config
 /// does: a library's name does not belong in a config directory.
+///
+/// Resolution here is weaker than `userconfig::config_path`, which
+/// takes no environment channel at all. `MDSTORE_REGISTRY` names this
+/// file outright and answers for every tool, and `XDG_CONFIG_HOME` or
+/// `$HOME` supply the base. A repo can therefore choose which registry
+/// answers, and the registry decides which content a declared URL
+/// resolves to. Filed as zfip.
 pub fn registry_path(tool: &str) -> PathBuf {
     if let Ok(p) = std::env::var("MDSTORE_REGISTRY") {
         return PathBuf::from(p);
@@ -31,10 +38,13 @@ pub fn registry_path(tool: &str) -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    // `format!`, matching config_path, and not `join(tool)`. `join`
-    // drops the base when the component is absolute, so the two public
-    // functions would disagree on what one `tool` value can reach.
-    base.join(format!("{tool}/registry.yml"))
+    // An absolute `tool` escapes the base here: `join` drops the base
+    // for an absolute component, and a leading `{tool}` in a format
+    // string is absolute for the same input. `config_path` contains the
+    // same input only because its format string opens with a literal.
+    // Neither function validates the name, and no caller can supply one
+    // that is not a compile-time constant. Filed as sv4p.
+    base.join(tool).join("registry.yml")
 }
 
 /// One override: a declared source, and where it lives on this machine.
@@ -170,17 +180,27 @@ mod tests {
         // body ignores collapses both, whatever the base resolves to.
         let a = registry_path("tisket");
         let b = registry_path("zettel");
-        if std::env::var_os("MDSTORE_REGISTRY").is_some() {
-            // The env override answers for every tool by design.
+
+        // MDSTORE_REGISTRY answers for every tool by design, so the
+        // per-tool assertions cannot hold under it. Assert that
+        // documented behavior instead of skipping: a silent skip once
+        // reported ok with the guarded bug live.
+        if let Some(forced) = std::env::var_os("MDSTORE_REGISTRY") {
+            assert_eq!(a, PathBuf::from(&forced));
+            assert_eq!(b, PathBuf::from(&forced));
             return;
         }
+
         assert_ne!(a, b, "two tools must never share a registry file");
         assert!(a.ends_with("tisket/registry.yml"), "{}", a.display());
         assert!(b.ends_with("zettel/registry.yml"), "{}", b.display());
         for tool in ["tisket", "zettel", "almanac"] {
             let p = registry_path(tool);
+            // Whole-string, not ends_with. The base is environment
+            // dependent, so there is no component to anchor against,
+            // and a reintroduced prefix keeps the tail intact.
             assert!(
-                !p.ends_with("mdstore/registry.yml"),
+                !p.to_string_lossy().contains("mdstore"),
                 "{tool} reads the library's directory: {}",
                 p.display()
             );
