@@ -11,6 +11,12 @@
   process cwd. The walk resolves it once, after the location guards,
   and locate, identity and a consumer's sync all see one absolute
   path.
+- A staging directory from a create that died is swept before the
+  next create. The sweep ran only when the slot already existed, so a
+  create that never completed left its `<slot>.tmp-<pid>` forever.
+  Only a sibling older than an hour goes: a live peer's staging is
+  minutes old, and the issue's pid-liveness check would need a new
+  dependency for what age answers portably.
 - An `@` in a local path is not scp syntax. `canonical_url` read any
   scheme-less `@` as `user@host`, so `/x/at1/x@1` and `/x/at2/y@1`
   both keyed the cache slot as `1`, and the lowercasing merged local

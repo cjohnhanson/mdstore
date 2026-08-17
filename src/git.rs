@@ -174,6 +174,11 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // A dead create's staging would otherwise sit forever: the sweep
+    // on the present-slot path never runs while no slot exists. Only
+    // a stale sibling goes — a live peer's staging is minutes old,
+    // and an hour-old one belongs to nothing.
+    sweep_stale_staging(&dir);
     let staging = dir.with_extension(format!("tmp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let result = match source {
@@ -191,6 +196,35 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
         std::fs::rename(&staging, &dir)?;
     }
     Ok(dir)
+}
+
+/// A `<slot>.tmp-*` sibling older than an hour is an orphan from a
+/// create that died, whether or not the slot exists. A live create is
+/// minutes old; deleting one would only fail that peer's rename.
+fn sweep_stale_staging(dir: &Path) {
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let prefix = format!("{name}.tmp-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let hour = std::time::Duration::from_secs(60 * 60);
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > hour);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Once a slot is present, every `<slot>.tmp-*` sibling is an orphan
@@ -993,6 +1027,54 @@ mod tests {
                     .next()
                     .is_none()
         );
+    }
+
+    /// An orphan staging directory from an interrupted create is
+    /// swept before the next create.
+    ///
+    /// The sweep ran only when the slot already existed. A create that
+    /// never completed left <slot>.tmp-<pid> forever, because the next
+    /// run took the create path, which removed only its own pid's
+    /// staging. A stale orphan is one older than an hour: a live
+    /// peer's staging is minutes old, and deleting it would only fail
+    /// that peer's rename, not corrupt anything.
+    #[test]
+    fn an_orphan_from_a_dead_create_is_swept_on_the_next_create() {
+        let _env = crate::env_lock();
+        let base = scratch("orphan-create");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        commit_files(&repo, &[("notes/a.md", "---\ntitle: A\n---\n")], "one");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let dir = cache_dir(&url);
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+
+        // An old orphan and a fresh one, planted before any slot
+        // exists, so the create path is the one that must sweep.
+        let stale = dir.with_extension("tmp-424242");
+        std::fs::create_dir_all(&stale).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        let times = std::fs::FileTimes::new()
+            .set_accessed(old)
+            .set_modified(old);
+        std::fs::File::open(&stale)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
+        let fresh = dir.with_extension("tmp-424243");
+        std::fs::create_dir_all(&fresh).unwrap();
+
+        ensure_clone(&url).unwrap();
+        assert!(!stale.exists(), "a stale orphan survived the create path");
+        assert!(
+            fresh.exists(),
+            "a fresh staging directory was swept while its create could be live"
+        );
+        assert!(dir.join("HEAD").exists(), "the clone itself failed");
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 
     /// A relative git declaration names a repository next to the
