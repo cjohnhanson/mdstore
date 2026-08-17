@@ -1,0 +1,12 @@
+fresh-eyes: not applicable, and said so rather than faked.
+
+Five commits touching only .tisket/: the issue files this session
+opened and its working scratch. No source, no test, no guard. There is
+no mutation to apply because there is no behaviour; a docs-only change
+has nothing a test could go red on. The gate's header names this as
+the claim-check limit, and this note is the honest case of it rather
+than the evasive one.
+
+Read by the author only. The content is a record of work already
+reviewed and landed under its own notes: e57ff8d, 85ba0bd, and the
+three consumer tips they name.
