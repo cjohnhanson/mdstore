@@ -57,19 +57,38 @@ The merge gate runs the tests, then requires a review note:
 cargo test --workspace --all-features
 ```
 
-A push carries a review note on its tip. A reviewer who did not write
+A push carries a review note on its tip, holding one sign-off line per
+review. `.gaff/gaff.yml` declares which reviews a change must pass.
+Read the list with:
+
+```sh
+gaff reviews
+```
+
+Today that is `fresh-eyes` and `mutation`. A reviewer who did not write
 the change reads it, then removes a guard the change adds and watches a
-named test go red. The note records both:
+named test go red. Each sign-off is one line, anchored at the start of
+a line, naming the commit it reviewed:
 
 ```sh
 git notes --ref=reviews add -m \
-  'fresh-eyes: <reviewer> <scope>. Mutation: <what> -> <test> red' <sha>
+'signoff[fresh-eyes] PASS 4f1c2ab read the parser and every guard
+signoff[mutation] PASS 4f1c2ab removed the FAIL branch, a_failed_signoff went red' <sha>
 ```
 
-A note that only says the change was read is refused. That rule has a
-reason. Every regression that reached a reviewed tip on 2026-08-16 had
-green tests and a review note. A reviewer caught each one only by
-putting the bug back.
+Prose around the lines is ignored, so a note can carry a narrative too.
+
+Six things refuse a push: no sign-off for a declared review, a verdict
+of `FAIL`, a sign-off naming a different commit, two sign-offs for one
+review, evidence under three words, and no note at all.
+
+The commit binding is the load-bearing part. Without it a sign-off
+copies forward onto a later commit nobody read, and nothing says so.
+
+Prose alone is not a sign-off, and that rule has a reason. A note
+reading `mutation: skipped this round` names the review, so the first
+version of this check passed it. So did `fresh-eyes: FAILED, do not
+merge`.
 
 ## Running the gates locally
 
@@ -81,7 +100,8 @@ push without a review note, so an outside contributor cannot push at
 all. Open a pull request and let CI run the gates.
 
 For sustained work, install them with
-[gaff](https://github.com/cjohnhanson/gaff):
+[gaff](https://github.com/cjohnhanson/gaff). The hooks call it, so it
+must be on your `PATH`:
 
 ```sh
 cargo install --git https://github.com/cjohnhanson/gaff
