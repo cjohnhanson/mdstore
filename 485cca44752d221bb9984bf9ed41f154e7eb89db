@@ -27,3 +27,7 @@ Blob declarations carry no rev, so the lying-pin shape cannot exist
 there, and blob sync fails loudly on a missing index.
 
 201 tests with --all-features, clippy clean, fmt clean.
+
+Rebased onto d18228a, the peer's gate-workflow landing; the source the
+reviewer read is unchanged, diff between tips touches .github and a
+test fixture identity only.
