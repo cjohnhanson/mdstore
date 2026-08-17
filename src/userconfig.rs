@@ -341,9 +341,10 @@ mod tests {
 
         let store = home.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        // The invariant, not a chosen remedy: a reported path holds the
-        // bytes. A refusal satisfies it too, so this test does not
-        // decide between the options recorded in bzs1.
+        // This pins symlink transparency on purpose. A write that
+        // refused a symlinked parent would fail the unwrap below, and
+        // that is the point: bzs1 closed as not a defect, so following
+        // the link is the wanted behavior rather than a tolerated one.
         let written = UserConfig::save_root_in(Some(&home), named("zettel"), &store).unwrap();
         // The reported path resolves to the bytes: a read of it returns
         // what the write put there. The physical file sits in the link

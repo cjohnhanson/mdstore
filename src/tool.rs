@@ -56,6 +56,14 @@ impl<'a> ToolName<'a> {
     ///   and `"C:"` would escape the home.
     ///
     /// Never normalises: a rejected name is the caller's to fix.
+    ///
+    /// A document id passes through `is_plain_stem` and stops there,
+    /// which is not an inconsistency. An id is joined through
+    /// `confined::StoreDir`, a capability the operating system enforces,
+    /// so the predicate checks shape and the kernel supplies
+    /// containment. A tool name is joined against the home with a plain
+    /// `Path::join` and no capability beneath it, so the name itself
+    /// carries the whole guarantee.
     #[must_use]
     pub const fn new(name: &'a str) -> Option<Self> {
         if !crate::store::is_plain_stem(name) {
