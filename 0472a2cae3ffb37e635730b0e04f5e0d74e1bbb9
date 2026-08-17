@@ -1,0 +1,15 @@
+fresh-eyes: independent per-repo review of the launch-hygiene branch, one agent per repository, reading the diff cold against origin/main.
+
+Scope: the pull_request trigger in .gaff/gaff.yml and the regenerated gate workflow, the merge-gate guard, the Cargo.toml exclude list, the LICENSE year, the .gitignore additions, and the README cross-links.
+
+The mdstore review returned fix-then-merge with one blocker and seven majors. Every finding was reproduced before acting on it. Two changed the design.
+
+First, skipping the note check on a pull request was wrong. A pull request merged through GitHub produces a push made by GitHub, so no pre-push hook runs and no note would ever be checked. The gate now reads the note from the pull request head, which is the commit a reviewer read.
+
+Second, GITHUB_EVENT_NAME alone was settable in any local shell, so a single variable turned the note check off. The guard now requires GITHUB_ACTIONS as well.
+
+Also fixed: CONTRIBUTING.md documented the limitation this branch removes, nk4l stayed open after its own fix landed, the result rule in .gitignore matched at any depth, and the script header undercounted its own limits.
+
+Mutation: applied twice, and the first attempt was worthless. The commit under test already carried a note, so the loop the guard protects never ran and the mutant passed. Against a note-less commit, dropping the runner requirement turns a_local_shell_cannot_skip_the_note_check red, and removing the guard entirely turns a_pull_request_refuses_an_unreadable_head_sha red.
+
+tests/merge_gate_guard.rs carries five tests: a push event, an unset event, a local shell setting only the event name, a note-less pull request head, and an unreadable event payload. All five pass, and each mutation above turns a named one red.
