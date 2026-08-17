@@ -1,0 +1,45 @@
+fresh-eyes: two independent cold reviewers (subagents, no authorship of this branch), one on the pack writer, one on the cache-key and sweep commits. Both LAND.
+
+Two rounds each. Both found the branch RED where the author reported
+green: a new test spawned git, which this crate forbids and its own
+integration test enforces, and the author had read the lib target's
+count while tests/single_binary failed.
+
+Pack reviewer, round one: write_pack opened the source odb at
+git_dir()/objects, so a linked worktree source failed to mirror at
+all — a regression this branch introduced, and every worktree in this
+project is such a source. common_dir is the same path for an ordinary
+repository. Round two: the corrupt-pack test built its own options and
+pinned gix-pack rather than this crate, so switching iteration_mode at
+the production site kept all 210 green. One constructor now serves
+both, and that mutation turns the test red.
+
+Mutations killed, each by a named test: pack skipped on create; ids
+collected and dropped; common_dir reverted to git_dir; the source
+exists check removed; Verify to Restore at the production site. The
+reviewer proved the corrupt-pack assertion fires on the flipped entry
+and not the trailer, by recomputing the trailer and seeing Verify
+still refuse. The options extraction was proved pure by comparing all
+six fields, and the produced packs are byte-identical at 4,064,751 and
+908,110 bytes.
+
+Cache-key reviewer, round one: the author's kill claim for the
+no-slash condition was false — it held before the colon condition
+existed and was never re-run after — and losing it re-collapses two
+absolute paths onto one slot. The sweep's prefix test had no coverage,
+and the mutant dropping it deletes every entry in the cache root older
+than an hour, which is every other store a person has cached. Four
+changelog statements were wrong. Round two confirmed all three fixed
+and no previously-killed mutant regressed.
+
+Four survivors remain in the walk rewrite, each a partial revert of
+one expression pinned twice over elsewhere; judged coverage depth,
+not a gate.
+
+210 lib tests, tests/single_binary green, clippy and fmt clean, and
+zettel, tisket and almanac all pass against this tree.
+
+Deferred with reviewer assent: the .keep file left in every slot, a
+pre-existing nested-tag case identical in both paths, the OOM-abort
+path, and deltas not carried, which the changelog states with its 11x
+measurement.
