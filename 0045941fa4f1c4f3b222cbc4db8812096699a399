@@ -1,0 +1,21 @@
+fresh-eyes: independent review agent (not the author). Reviewer is an agent, not a human.
+
+This tip is a merge of origin/main into per-tool-config. The branch was cut from a main that had moved 17 commits, so the pull request came back CONFLICTING and the change had been reviewed on a stale base.
+
+Two reviews stand behind it.
+
+1. Five rounds over the change, ending SHIP on ea80dc6. Rounds one to four returned FIX FIRST. Every guard verified by putting the bug back; the note on b865230 lists each mutation and the named test that caught it, and records one that no test catches: config_path_in reverted to a per-component join leaves the suite green, because ToolName is total and the second layer is unreachable.
+
+2. A verification pass over this merge, because the reviewed content now sits on a different base.
+- src/store.rs is the only reviewed file the merge combined. The old is_plain_stem body on origin/main is byte-identical to the body the change replaces, diffed rather than eyeballed, so the equivalence proof over 1,413,174 inputs transfers unchanged. The merged diff against main is two hunks: the const rewrite and three loop-bound test cases. No hunk lost, none duplicated.
+- No incoming commit touches confined.rs, userconfig.rs, registry.rs, resolve.rs or tool.rs. None references is_plain_stem, ToolName, config_path, registry_path, save_root or resolve_root. The five confinement tests behind the document-id reasoning are all present.
+- Main's colon work (9c79b92, 1abafec) is git URL scp-form canonicalization, not tool-name validation. Different domain, no shared path, no conflict with the colon rejection here.
+
+Mutations re-applied on the merged tree, to show the guards bite on this base and not only the old one:
+- registry_path discards its tool argument -> registry::tests::each_tool_owns_its_own_registry_path, line 198, two tools must never share a registry file.
+- save_root_in ignores its home parameter -> userconfig::tests::the_read_and_the_write_route_through_the_tools_directory, line 316, the write ignored the home it was given; and userconfig::tests::a_symlinked_tool_directory_round_trips, line 357.
+- is_plain_stem loop bound off by one -> store::tests::a_plain_stem_is_one_document_and_never_a_path, line 2266, and tool::tests::a_name_that_is_not_one_plain_component_is_refused, line 128, "a/" was accepted. Applied because store.rs is the one file the auto-merge combined, so it is where a guard could have been diluted silently.
+
+Conflicts resolved by hand, both manifests. Cargo.toml version: main had reached 0.3.6 and this change breaks five public signatures, so 0.4.0. Under Cargo's 0.x rules the minor position is the compatibility boundary, so 0.3.7 would let mdstore = "0.3" resolve to code that cannot compile against it. Matches repo precedent at 8125027. Cargo.lock taken from main and refreshed by cargo.
+
+Gate on 0045941: 216 unit tests passed, 0 failed, 1 ignored (git::tests::network_clone_and_fetch_over_https_run_in_process, needs the network). 8 integration tests across two binaries: tests/merge_gate_guard.rs 7, from main, and tests/single_binary.rs 1, the standing no-spawn guard. 2 doc-tests passed. clippy --all-targets --all-features -D warnings clean. fmt clean.
