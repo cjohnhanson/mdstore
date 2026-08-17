@@ -1411,6 +1411,19 @@ mod tests {
             "two @-segment paths share a slot key"
         );
         assert_eq!(canonical_url_for_cache("up@2"), "up@2");
+
+        // Both conditions are load-bearing, and only a path carrying
+        // BOTH a slash before the @ and a colon after it tells them
+        // apart. Without the no-slash test these two collapse onto
+        // "1/2" together, which is this fix's own bug in its own
+        // shape; the colon test alone does not catch it.
+        assert_ne!(
+            canonical_url_for_cache("/a/x@1:2"),
+            canonical_url_for_cache("/b/y@1:2"),
+            "two absolute paths with @ and : share a slot key"
+        );
+        assert_eq!(canonical_url_for_cache("/a/x@1:2"), "/a/x@1:2");
+        assert_eq!(canonical_url_for_cache("~/w/x@1:2"), "~/w/x@1:2");
     }
 
     // -- references --

@@ -199,8 +199,18 @@ pub fn ensure_clone(url: &str) -> Result<PathBuf> {
 }
 
 /// A `<slot>.tmp-*` sibling older than an hour is an orphan from a
-/// create that died, whether or not the slot exists. A live create is
-/// minutes old; deleting one would only fail that peer's rename.
+/// create that died, whether or not the slot exists.
+///
+/// The age is weaker than it looks: a write under `objects/` does not
+/// move the staging root's mtime, so a create running longer than an
+/// hour looks stale to a concurrent peer of the same slot. The damage
+/// is bounded, because the rename is the only publish — the loser
+/// fails its rename and a re-run fixes it. Age is chosen over a
+/// pid-liveness check because pid liveness has no portable form.
+///
+/// The prefix test is what keeps this to this slot. Without it the
+/// sweep takes every entry in the cache root older than an hour,
+/// which is every other store a person has cached.
 fn sweep_stale_staging(dir: &Path) {
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name().and_then(|n| n.to_str()))
     else {
@@ -618,7 +628,11 @@ fn write_pack(src: &gix::Repository, ids: Vec<gix::ObjectId>, dst_objects: &Path
     }
     let count = u32::try_from(ids.len())
         .map_err(|_| Error::InvalidStore("more than u32::MAX objects in one mirror".into()))?;
-    let find = gix_odb::at(src.git_dir().join("objects"))
+    // common_dir, not git_dir: a linked worktree's git_dir holds no
+    // objects directory, and the objects live in the common dir. The
+    // two are the same path for an ordinary repository. The loose arm
+    // never had this, because src.objects already follows it.
+    let find = gix_odb::at(src.common_dir().join("objects"))
         .and_then(gix_odb::Handle::into_arc)
         .map_err(|e| Error::InvalidStore(format!("open source objects: {e}")))?;
     let counts: Vec<gix_pack::data::output::Count> = ids
@@ -1237,6 +1251,17 @@ mod tests {
         let fresh = dir.with_extension("tmp-424243");
         std::fs::create_dir_all(&fresh).unwrap();
 
+        // Another store's slot, and its own stale staging, both aged
+        // past the cutoff so only the prefix test can spare them.
+        let neighbour = dir.parent().unwrap().join("some-other-slot");
+        std::fs::create_dir_all(&neighbour).unwrap();
+        std::fs::write(neighbour.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let neighbour_staging = neighbour.with_extension("tmp-424244");
+        std::fs::create_dir_all(&neighbour_staging).unwrap();
+        for p in [&neighbour, &neighbour_staging] {
+            std::fs::File::open(p).unwrap().set_times(times).unwrap();
+        }
+
         ensure_clone(&url).unwrap();
         assert!(!stale.exists(), "a stale orphan survived the create path");
         assert!(
@@ -1244,6 +1269,193 @@ mod tests {
             "a fresh staging directory was swept while its create could be live"
         );
         assert!(dir.join("HEAD").exists(), "the clone itself failed");
+
+        // A neighbouring slot is not this slot's staging. Without the
+        // prefix test the sweep takes every entry in the cache root
+        // older than an hour, which is every other store a person has
+        // cached.
+        assert!(
+            neighbour.join("HEAD").exists(),
+            "the sweep deleted another store's slot"
+        );
+        assert!(
+            neighbour_staging.exists(),
+            "the sweep deleted another slot's staging"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
+    /// A corrupt pack never becomes a slot.
+    ///
+    /// The bundle writer re-parses the stream, and iteration_mode
+    /// Verify is what makes a bad byte an error. Under Restore the
+    /// create succeeded and published a slot whose pack claimed more
+    /// objects than its index held: every later read failed, forever,
+    /// until a person deleted the slot by hand.
+    #[test]
+    fn a_corrupt_pack_is_refused_rather_than_published() {
+        let _env = crate::env_lock();
+        let base = scratch("corruptpack");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        commit_files(
+            &repo,
+            &[("notes/a.md", "---\ntitle: A\n---\nbody\n")],
+            "one",
+        );
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let dir = cache_dir(&url);
+        // A real pack, then one byte flipped inside it. Junk bytes
+        // are refused by any mode, so they pin nothing; only a
+        // structurally valid pack with corrupt content separates
+        // Verify from Restore, which truncates and accepts.
+        ensure_clone(&url).expect("a sound source failed to mirror");
+        let packs: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("objects/pack"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pack"))
+            .collect();
+        assert_eq!(packs.len(), 1, "expected exactly one pack to corrupt");
+        let mut bytes = std::fs::read(&packs[0]).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xff;
+
+        let out = base.join("packout");
+        std::fs::create_dir_all(&out).unwrap();
+        let refused = gix_pack::Bundle::write_to_directory(
+            &mut bytes.as_slice(),
+            Some(&out),
+            &mut gix::progress::Discard,
+            &std::sync::atomic::AtomicBool::new(false),
+            None::<gix::objs::find::Never>,
+            gix_pack::bundle::write::Options {
+                thread_limit: None,
+                iteration_mode: gix_pack::data::input::Mode::Verify,
+                index_version: gix_pack::index::Version::default(),
+                object_hash: gix::hash::Kind::Sha1,
+                ..Default::default()
+            },
+        );
+        assert!(
+            refused.is_err(),
+            "Verify accepted a pack that is not one; a corrupt stream would reach a slot"
+        );
+
+        // The sound pack indexes through the same call, so the
+        // assertion above is about the corruption and not about the
+        // call failing always.
+        let sound = std::fs::read(&packs[0]).unwrap();
+        let out2 = base.join("packout2");
+        std::fs::create_dir_all(&out2).unwrap();
+        gix_pack::Bundle::write_to_directory(
+            &mut sound.as_slice(),
+            Some(&out2),
+            &mut gix::progress::Discard,
+            &std::sync::atomic::AtomicBool::new(false),
+            None::<gix::objs::find::Never>,
+            gix_pack::bundle::write::Options {
+                thread_limit: None,
+                iteration_mode: gix_pack::data::input::Mode::Verify,
+                index_version: gix_pack::index::Version::default(),
+                object_hash: gix::hash::Kind::Sha1,
+                ..Default::default()
+            },
+        )
+        .expect("a sound pack was refused");
+        assert!(dir.join("HEAD").exists());
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
+    /// A source missing an object fails the mirror by name.
+    ///
+    /// The collect arm checks existence per object so a hole is named
+    /// here. Without the check the pack pipeline still fails, but as
+    /// "a pack entry could not be extracted", which names neither the
+    /// object nor the source.
+    #[test]
+    fn a_hole_in_the_source_names_the_object() {
+        let _env = crate::env_lock();
+        let base = scratch("srchole");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        commit_files(&repo, &[("notes/a.md", "---\ntitle: A\n---\n")], "one");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        // Delete the BLOB, not a tree: the walk reads a tree itself
+        // and would fail there first, so only a missing leaf reaches
+        // the collect arm's check.
+        let src = gix::open_opts(&origin, gix::open::Options::isolated()).unwrap();
+        let blob = src
+            .rev_parse_single("HEAD:notes/a.md")
+            .unwrap()
+            .detach()
+            .to_string();
+        let removed = blob.clone();
+        std::fs::remove_file(
+            origin
+                .join(".git/objects")
+                .join(&blob[..2])
+                .join(&blob[2..]),
+        )
+        .unwrap();
+        drop(src);
+
+        let url = origin.display().to_string();
+        let err = ensure_clone(&url).expect_err("a source with a hole mirrored anyway");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing from the source"),
+            "the hole was not named as a source problem: {msg}"
+        );
+        assert!(
+            msg.contains(&removed[..8]),
+            "the message does not name the object: {msg}"
+        );
+        assert!(
+            !crate::git::cache_dir(&url).join("HEAD").exists(),
+            "a slot was published from an incomplete source"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
+    /// A linked worktree is a legitimate source.
+    ///
+    /// write_pack opened the source odb at git_dir()/objects. For a
+    /// linked worktree git_dir() is <main>/.git/worktrees/<name>,
+    /// which holds no objects directory; the objects live in the
+    /// common dir. The mirror failed outright and made no slot. The
+    /// loose path never had this, because it goes through
+    /// src.objects, which follows the common dir.
+    #[test]
+    fn a_linked_worktree_source_mirrors() {
+        let _env = crate::env_lock();
+        let base = scratch("worktree-src");
+        let main = base.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let repo = init(&main);
+        let c1 = commit_files(&repo, &[("notes/a.md", "---\ntitle: A\n---\n")], "one");
+        let linked = base.join("linked");
+        let ok = std::process::Command::new("git")
+            .args(["-C", main.to_str().unwrap(), "worktree", "add", "-q"])
+            .arg(&linked)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "git worktree add failed, so this test asserts nothing");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = linked.display().to_string();
+        let dir = ensure_clone(&url).expect("a linked worktree source failed to mirror");
+        let rev = resolve_rev(&dir, None).unwrap();
+        assert_eq!(rev, c1.to_string());
+        assert!(
+            show(&dir, &rev, "notes/a.md").unwrap().contains("A"),
+            "the worktree's content is missing from the slot"
+        );
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 
