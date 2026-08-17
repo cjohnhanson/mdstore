@@ -1,1 +1,22 @@
+# Build output. The whole directory, never a subset — a partial rule is
+# how 7,000 build artifacts reached a public branch once already.
 /target
+/result
+/result-*
+
+# Coding-agent and editor local state. Machine-specific, and one of
+# these reached public history before.
+/.claude/
+/.cursor/
+/.aider*
+/.gaff-state/
+*.swp
+*~
+\#*\#
+.DS_Store
+
+# Local dependency overrides. A path override names a directory on one
+# machine, so it exposes the account layout and breaks every other
+# clone. Keep them here, never in Cargo.toml.
+/.cargo/config.toml
+/config.toml

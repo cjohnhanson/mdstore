@@ -1,0 +1,6 @@
+# Pins the toolchain so a contributor and CI format and lint identically.
+# rustfmt and clippy decisions change between releases, so an unpinned
+# toolchain makes the gates disagree across machines.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

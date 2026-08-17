@@ -10,6 +10,22 @@ readme = "README.md"
 authors = ["Cody Hanson"]
 keywords = ["markdown", "frontmatter", "yaml", "document-store", "storage"]
 categories = ["parser-implementations", "text-processing", "filesystem"]
+# Repository machinery belongs on GitHub. A consumer installing the
+# crate gets the source, the license, the changelog, and the two
+# documents that concern them: the README and the security policy.
+exclude = [
+    ".tisket/",
+    "tisket.yml",
+    ".gaff/",
+    ".github/",
+    "scripts/",
+    # Shells out to scripts/merge-gate.sh, which the line above drops.
+    "tests/merge_gate_guard.rs",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    ".editorconfig",
+    "rust-toolchain.toml",
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
