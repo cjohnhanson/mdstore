@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 /// The parsed user config. An absent file is the one benign absence:
 /// it means no fallback, which is exactly the behavior before this
 /// file existed.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
     /// The schema gate. A higher format is an error, never a guess.
@@ -33,6 +33,15 @@ pub struct UserConfig {
 
 fn format_one() -> u32 {
     1
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            format: 1,
+            root_store: None,
+        }
+    }
 }
 
 /// The home directory, from the passwd database. Never `$HOME`.
@@ -82,9 +91,8 @@ impl UserConfig {
                 )));
             }
         };
-        let cfg: Self = yaml_serde::from_str(&text).map_err(|e| {
-            Error::InvalidStore(format!("cannot read {}: {e}", path.display()))
-        })?;
+        let cfg: Self = yaml_serde::from_str(&text)
+            .map_err(|e| Error::InvalidStore(format!("cannot read {}: {e}", path.display())))?;
         if cfg.format > 1 {
             return Err(Error::InvalidStore(format!(
                 "cannot read {}: format {} is newer than this binary understands",
@@ -121,14 +129,27 @@ impl UserConfig {
                 "no home directory resolves from the passwd database".to_string(),
             ));
         };
+        Self::save_root_to(&path, root)?;
+        Ok(path)
+    }
+
+    /// Write `root_store` to an explicit path, atomically. The value
+    /// goes through the YAML serializer, so a path holding a colon, a
+    /// quote, or a space cannot write a file the loader then refuses.
+    pub fn save_root_to(path: &Path, root: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = format!("format: 1\nroot_store: {}\n", root.display());
+        let cfg = Self {
+            format: 1,
+            root_store: Some(root.to_path_buf()),
+        };
+        let text = yaml_serde::to_string(&cfg)
+            .map_err(|e| Error::InvalidStore(format!("cannot serialize the config: {e}")))?;
         let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
         std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(path)
+        std::fs::rename(&tmp, path)?;
+        Ok(())
     }
 }
 
@@ -181,6 +202,22 @@ mod tests {
         assert!(root.is_absolute());
         assert!(root.ends_with("notes"));
         assert_eq!(root, passwd_home().unwrap().join("notes"));
+    }
+
+    #[test]
+    fn a_hostile_path_round_trips_through_the_serializer() {
+        let d = scratch("save");
+        let store = d.join("we: ird 'quoted'");
+        std::fs::create_dir_all(&store).unwrap();
+        let cfg_path = d.join("cfg.yml");
+        UserConfig::save_root_to(&cfg_path, &store).unwrap();
+        let cfg = UserConfig::load_from(&cfg_path).unwrap();
+        assert_eq!(cfg.root_store.as_deref(), Some(store.as_path()));
+    }
+
+    #[test]
+    fn the_default_format_matches_the_serde_default() {
+        assert_eq!(UserConfig::default().format, 1);
     }
 
     #[test]
