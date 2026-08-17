@@ -1,13 +1,13 @@
 ---
 title: store sync reports synced for a pin whose rev does not exist
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
 labels: []
 depends_on: []
 created: 2026-08-16T21:02:18Z
-updated: 2026-08-16T21:02:18Z
+updated: 2026-08-17T16:11:21Z
 ---
 
 ## Problem
@@ -30,3 +30,10 @@ the wrong Blob occurrence — full output read this time). 201 tests.
 Reviewer is asked to attack the None arm's no-commits reasoning, the
 fake-oid fixture, the force-push case, and the consumers' sync loops
 for an abort-class regression.
+Closed at mdstore 3709ed7, landed through the new check-gated path:
+branch pushed, gate run green on the sha (one outage rerun, codeload
+429 then 503 before any code ran), sha pushed to main, ancestry
+verified. The review took one message fix: the no-commits arm now
+leads with HEAD not resolving and names both causes, after the
+reviewer built a HEAD naming a deleted branch over a source that had
+commits.
