@@ -68,10 +68,10 @@ git notes --ref=reviews add -m \
   'fresh-eyes: <reviewer> <scope>. Mutation: <what> -> <test> red' <sha>
 ```
 
-A note that only says the change was read is refused. That rule exists
-because every regression that reached a reviewed tip on 2026-08-16 had
-green tests and a review note, and each was caught only when a reviewer
-put the bug back.
+A note that only says the change was read is refused. That rule has a
+reason. Every regression that reached a reviewed tip on 2026-08-16 had
+green tests and a review note. A reviewer caught each one only by
+putting the bug back.
 
 ## Running the gates locally
 

@@ -23,9 +23,9 @@ are credited unless you ask otherwise.
 ## Scope
 
 mdstore reads and writes markdown documents under a directory. It
-resolves a store graph from `stores.yml` declarations, and it fetches
-from three source types: a local path, a git repository, and an https
-blob prefix.
+resolves a store graph from `stores.yml` declarations. It fetches from
+three source types: a local path, a git repository, and an https blob
+prefix.
 
 A store declaration can come from content the reader does not control,
 such as a vendored dependency or a remote store. What that declaration
