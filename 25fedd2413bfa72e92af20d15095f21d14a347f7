@@ -1,0 +1,7 @@
+fresh-eyes: not applicable, and said so rather than faked.
+
+Three commits touching only .tisket/: state notes on 0wyk, 4a0o and
+ghqf recording what each fix covers, which approach it took where the
+issue offered two, and where it deviates. No source, no test, no
+guard, so no mutation to apply. The gate's header names this
+claim-check limit; this is its honest case.
