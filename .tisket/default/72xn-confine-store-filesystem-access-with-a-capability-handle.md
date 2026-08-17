@@ -321,3 +321,38 @@ forever, through unguarded ambient reads that predate this work.
 Not landed: zettel fix/lazy-note-handle, which holds the handle lazily
 so a read stops creating the note directory. Committed work is in the
 worktree, unreviewed.
+## 2026-08-16 22:47 — the follow-ups are being fixed, not filed
+
+Reversed course after the user objected to filing rather than fixing.
+Four branches in review, none landed:
+
+- mdstore fix/store-error-keeps-the-kind (5b2ba2e). A store error now
+  carries the errno and exposes refused_by_confinement(). cap-std
+  reports an escaping path as PermissionDenied and so does a mode-000
+  directory; only the errno separates them, and io_error was throwing
+  it away. tisket's fix depends on this. 198 tests.
+- tisket fix/load-project-and-closed (3f96858). Round one caught two
+  regressions I introduced in the fix itself: swallowing every scan
+  failure turned a permissions fault into zero issues with exit 0, and
+  mapping a read failure onto ProjectNotFound reintroduced the layer
+  split one line below where I closed it. Both fixed. The test's
+  fixture held nothing beyond the link, so an ambient scan produced
+  the same empty answer; it asserts on the scan itself now.
+- almanac fix/no-hang-on-a-pipe (219bb95). Round one: the first fix
+  closed two doors of six. status, sync --check, add and update all
+  hung on the same pipe one command after check named it. All six
+  guarded, mutation-checked.
+- zettel fix/lazy-note-handle (8357972). Round one: a comment I wrote
+  claimed the anti-swap property was unchanged, and it was not.
+  Deferring the open deferred the containment check with it, and a
+  five-line probe listed a note from outside the store. The check runs
+  where the handle opens now. Also: swallowing every open failure hid
+  a mode-000 directory as an empty store; OnceCell cost Repo its Sync.
+
+Also this hour: moved seven tisket issue files out of the shared
+checkouts, where every 'cd ~/Projects/<repo> && tisket ...' had been
+writing them. Committed on docs/tisket-issues in each worktree, which
+is why this scratch is being written from ~/Projects/.wt/mdstore-issues.
+
+Recurring: a multi-edit script asserting late and writing nothing.
+Fourth time tonight. One edit per script now, verified by grep.
