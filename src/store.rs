@@ -1277,12 +1277,13 @@ pub fn sync_source(source: &StoreSource) -> Result<()> {
                 Err(_) => match rev {
                     Some(pin) => Err(Error::InvalidStore(format!("pin {pin} not found in {url}"))),
                     // The fetch succeeded and HEAD still does not
-                    // resolve, so nothing was there to mirror: the
-                    // source has no commits. Said plainly, because the
-                    // underlying error names the library ("could not
-                    // peel HEAD"), not the problem.
+                    // resolve. Usually the source has no commits; the
+                    // reviewer also built a HEAD naming a deleted
+                    // branch while other branches held commits, so the
+                    // message states what is known and names both
+                    // causes rather than asserting the common one.
                     None => Err(Error::InvalidStore(format!(
-                        "{url}: the source has no commits"
+                        "HEAD does not resolve in {url}: the source has no commits, or HEAD names a deleted branch"
                     ))),
                 },
             }
