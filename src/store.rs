@@ -1203,6 +1203,11 @@ impl OriginLookup for LookupAdapter<'_> {
 /// One entry of a guarded scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanEntry {
+    /// Where the document is, relative to the store root.
+    ///
+    /// Relative since 0.3.0. It was absolute, and a consumer that
+    /// passed it to std::fs kept working by accident while the store
+    /// it belonged to was no longer the one that answered.
     pub path: PathBuf,
     pub stem: String,
 }
@@ -1247,50 +1252,6 @@ pub fn document_dir(root: &Path, configured: &str) -> Result<PathBuf> {
     Ok(joined)
 }
 
-/// List the `.md` files of a store directory, skipping anything that is
-/// not a regular file.
-///
-/// Symlinks are skipped by type without being followed: a dependency
-/// store can ship `notes/key.md -> ~/.ssh/id_rsa`, and reading by
-/// extension alone would surface its contents as a document body.
-pub fn scan_documents(dir: &Path) -> Result<Scan> {
-    let mut scan = Scan::default();
-    if !dir.exists() {
-        return Ok(scan);
-    }
-    let mut paths: Vec<(PathBuf, String)> = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        // file_type() on the dirent does not follow symlinks.
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            scan.skipped
-                .push((path, "symlink (not followed)".to_string()));
-            continue;
-        }
-        if !file_type.is_file() {
-            scan.skipped.push((path, "not a regular file".to_string()));
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            scan.skipped
-                .push((path, "name is not valid UTF-8".to_string()));
-            continue;
-        };
-        paths.push((path.clone(), stem.to_string()));
-    }
-    paths.sort();
-    scan.entries = paths
-        .into_iter()
-        .map(|(path, stem)| ScanEntry { path, stem })
-        .collect();
-    Ok(scan)
-}
-
 /// Fetch the current state of a remote source into the cache.
 ///
 /// Only a command that the user expects to reach the network calls
@@ -1302,76 +1263,6 @@ pub fn sync_source(source: &StoreSource) -> Result<()> {
         StoreSource::Git { url, .. } => crate::git::fetch(url),
         StoreSource::Blob { url } => crate::blob::sync(url).map(|_| ()),
     }
-}
-
-/// Read one document, refusing anything that is not a regular file.
-///
-/// A store is third-party content. A `.md` entry can be a symlink to a
-/// file outside the store, or a FIFO that never ends. Reading by path
-/// alone follows the link and blocks on the FIFO, so every reader goes
-/// through this.
-pub fn read_document(path: &Path) -> Result<String> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(Error::InvalidStore(format!(
-            "{} is a symlink; a document is a regular file",
-            path.display()
-        )));
-    }
-    if !meta.is_file() {
-        return Err(Error::InvalidStore(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    Ok(std::fs::read_to_string(path)?)
-}
-
-/// True when a path names a regular file, without following a link.
-#[must_use]
-pub fn is_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
-}
-
-/// Write a document without following a symlink at its path.
-///
-/// A direct write follows a link and overwrites the file it points at.
-/// Writing a temporary file beside the target and renaming over it
-/// replaces the link itself.
-pub fn write_document(path: &Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| Error::InvalidStore(format!("{} has no file name", path.display())))?;
-    // Stage under a name nothing else holds, and create it with
-    // O_EXCL. A plain write follows a symlink, so a store that ships
-    // `.{name}.tmp` as a link would turn every edit into a write to
-    // wherever that link points, and the rename would then move the
-    // link over the document. A unique name also keeps two writers on
-    // one store from staging into the same file.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
-
-    let write = (|| -> std::io::Result<()> {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()
-    })();
-    if let Err(e) = write {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e.into());
-    }
-    if let Err(e) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e.into());
-    }
-    Ok(())
 }
 
 /// True when the text names one document, not a path.
@@ -1816,9 +1707,10 @@ mod tests {
         let link = dir.join("note.md");
         #[cfg(unix)]
         std::os::unix::fs::symlink(&secret, &link).unwrap();
-        let err = read_document(&link).unwrap_err().to_string();
+        let store = crate::confined::StoreDir::open(&dir).unwrap();
+        let err = store.read("note.md").unwrap_err().to_string();
         assert!(err.contains("symlink"), "{err}");
-        assert!(!is_regular_file(&link));
+        assert!(!store.is_document("note.md"));
     }
 
     #[test]
@@ -1826,8 +1718,9 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("note.md");
         write(&path, "---\ntitle: t\n---\n");
-        assert!(is_regular_file(&path));
-        assert!(read_document(&path).unwrap().contains("title: t"));
+        let store = crate::confined::StoreDir::open(&dir).unwrap();
+        assert!(store.is_document("note.md"));
+        assert!(store.read("note.md").unwrap().contains("title: t"));
     }
 
     #[test]
@@ -1839,12 +1732,13 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        write_document(&link, "REPLACED").unwrap();
+        let store = crate::confined::StoreDir::open(&dir).unwrap();
+        store.write("note.md", "REPLACED").unwrap();
 
         // The link is gone, and what it pointed at is untouched.
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "ORIGINAL");
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "REPLACED");
-        assert!(is_regular_file(&link));
+        assert!(store.is_document("note.md"));
     }
 
     #[test]
@@ -2004,7 +1898,8 @@ mod tests {
 
         // The write either refuses or stages elsewhere. Either way the
         // victim keeps its content and the document is never a link.
-        let _ = write_document(&doc, "new content");
+        let store = crate::confined::StoreDir::open(&base.join("store")).unwrap();
+        let _ = store.write("note.md", "new content");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
         assert!(
             !std::fs::symlink_metadata(&doc)
@@ -2283,7 +2178,10 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&secret, dir.join("stolen.md")).unwrap();
 
-        let scan = scan_documents(&dir).unwrap();
+        let scan = crate::confined::StoreDir::open(&dir)
+            .unwrap()
+            .scan("")
+            .unwrap();
         let stems: Vec<&str> = scan.entries.iter().map(|e| e.stem.as_str()).collect();
         assert_eq!(stems, vec!["real"], "only the real file is a document");
         assert_eq!(scan.skipped.len(), 1);
@@ -2292,7 +2190,8 @@ mod tests {
 
     #[test]
     fn a_scan_of_a_missing_directory_is_empty() {
-        let scan = scan_documents(&tempdir().join("nope")).unwrap();
+        let store = crate::confined::StoreDir::open(&tempdir()).unwrap();
+        let scan = store.scan("nope").unwrap();
         assert!(scan.entries.is_empty());
         assert!(scan.skipped.is_empty());
     }
