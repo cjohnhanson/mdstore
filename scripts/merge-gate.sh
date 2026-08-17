@@ -1,30 +1,26 @@
 #!/bin/sh
 # The merge gate. These repos merge by direct push, so this pre-push
-# hook is the merge check: nothing reaches the remote without green
-# tests, a green missouri suite, and a recorded fresh-eyes review.
+# hook is the merge check. A push needs green tests, a green missouri
+# suite, and a recorded fresh-eyes review.
 #
 # The review record is a git note on the pushed tip:
-#   git notes --ref=reviews add -m "fresh-eyes: <who> <what was reviewed>" <sha>
-# A note is written only after an independent reviewer has read the
-# change and its test coverage. Writing one without a review defeats
-# the gate and the point.
+#   git notes --ref=reviews add -m "fresh-eyes: <who> <scope>" <sha>
+# Write a note only after an independent reviewer has read the change
+# and its test coverage. A note without a review makes the gate false.
 #
-# Two known limits, stated rather than hidden: the suites run against
-# the working tree, not the pushed commit, so pushing a ref other than
-# the current checkout is gated by the wrong code; and a fresh clone
-# has no hooks until `gaff init --git` runs, which `gaff check` reports.
+# The gate has two known limits. The suites test the working tree, not
+# the pushed commit. A fresh clone has no hooks until `gaff init --git`
+# runs; `gaff check` reports that state.
 set -e
 
-# git hands this hook its ref list on stdin, and a stream is spent by
-# its first reader. Capture it before anything else can read it: a test
-# runner that touched stdin would drain the list, the loop below would
-# see EOF, and the gate would pass with nothing checked.
+# git sends the ref list on stdin. The first reader spends the stream.
+# Capture it before any other program can read it. If a test runner
+# read stdin first, the loop below would see EOF and check nothing.
 gate_refs=$(cat)
 
-# --all-features, because a feature that is off by default is still
-# code that ships. Without it the mcp module, which serves a store to a
-# network client, was never compiled by the gate.
 echo "merge-gate: cargo test"
+# --all-features, because a feature that is off by default is still
+# shipped code. The gate once built without mcp and never compiled it.
 cargo test --workspace --all-features --quiet >/dev/null </dev/null || {
   echo "merge-gate: cargo test failed. Nothing merges on red tests." >&2
   exit 1
@@ -41,20 +37,21 @@ if [ -d tests/missouri ]; then
     printf '%s\n' "$out" | tail -20 >&2
     exit 1
   }
-  # Belt and braces on top of the exit code: the summary must say a
-  # nonzero pass count and zero failures, so an empty suite cannot
-  # pass by vacuity.
+  # The exit code decides. The summary check adds a second gate: the
+  # run must show one or more passed paths and zero failures. An empty
+  # suite does not pass.
   printf '%s\n' "$out" | grep -E '[1-9][0-9]* passed, 0 failed' >&2 || {
     echo "merge-gate: the suite reported no passing path. An empty suite gates nothing." >&2
     exit 1
   }
 fi
 
-# Every pushed tip needs a review note. The note may sit on the commit
-# an annotated tag peels to. Branch deletions merge nothing. The
-# exemption for notes refs keys on the REMOTE ref: pushing the reviews
-# ref itself is how a review record is shared, but a notes object
-# pushed AT a branch would land on that branch and must be gated.
+# Each pushed tip needs a review note. For an annotated tag, the note
+# may sit on the commit the tag peels to. A branch deletion merges
+# nothing, so it is exempt. The notes-ref exemption keys on the remote
+# ref: a push of the reviews ref shares a review record, but a notes
+# object pushed at a branch lands on that branch, so that push is
+# gated.
 zero=0000000000000000000000000000000000000000
 printf '%s\n' "$gate_refs" | while read -r _local_ref local_sha remote_ref _remote_sha; do
   [ -z "$local_sha" ] && continue
