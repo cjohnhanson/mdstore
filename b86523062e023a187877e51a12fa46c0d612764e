@@ -1,0 +1,31 @@
+fresh-eyes: independent review agent (not the author), five rounds over mdstore per-tool-config: userconfig, registry, resolve, store, tool, README. Reviewer is an agent, not a human.
+
+Rounds one to four returned FIX FIRST. Round five returned SHIP on b865230.
+
+Mutations applied and the named test that caught each:
+- config_path joins the library directory -> userconfig::tests::each_tool_owns_its_own_config_path (assert_ne, two tools sharing one file).
+- config_path special-cases almanac back to the library directory -> same test, the starts_with loop.
+- resolve.rs:120 error string reverts to the library path -> resolve::tests::every_terminal_error_names_the_fix.
+- resolve.rs:133 error string reverts, alone -> same test, second branch.
+- registry_path discards its tool argument -> registry::tests::each_tool_owns_its_own_registry_path (two tools sharing one registry).
+- registry_path reintroduces the library directory as a prefix -> same test, the contains check.
+- registry_path env early return removed with MDSTORE_REGISTRY set -> same test, the override contract.
+- load_in routed to the library name -> userconfig::tests::the_read_and_the_write_route_through_the_tools_directory (read the wrong tool's file).
+- load_in ignores its home parameter -> same test.
+- load_in None arm returns an error -> same test.
+- save_root_in routed to the library name -> same test, returned-path equality.
+- save_root_in ignores its home parameter -> same test (a suffix assertion missed this; equality catches it).
+- is_plain_stem loop bound off by one, final byte unchecked -> store::tests::a_plain_stem_is_one_document_and_never_a_path and tool::tests::a_name_that_is_not_one_plain_component_is_refused.
+- is_plain_stem drops the separator, backslash, NUL or leading-dot check -> both tests above.
+- ToolName::new drops the leading-dash rejection -> tool test.
+- ToolName::new drops the colon rejection -> tool test.
+- save_root_to refuses a symlinked parent -> userconfig::tests::a_symlinked_tool_directory_round_trips.
+- save_root_to stages but never publishes -> same test, plus a_hostile_path_round_trips_through_the_serializer.
+
+NOT CAUGHT, and why that is correct: config_path_in reverted to a per-component join leaves the suite green. ToolName is total, so the second layer is unreachable by any test. Recorded rather than covered.
+
+Verified without mutation: is_plain_stem const rewrite proven equivalent to the old body over 1,112,064 Unicode scalars plus a combinatorial sweep; the config_path_in containment comment checked clause by clause (0 disagreements among accepted names, 112 among rejected, all absolute); the compile_fail doctest compiled verbatim with a same-shape positive control.
+
+Findings fixed during review: two untested error strings, a vacuous env branch, a suffix assertion that let the write ignore its home, three comments asserting containment the code lacked, an empty-name regression, an unvalidated tool name, and an issue (bzs1) retracted as not a defect after an inverted test passed on its first run.
+
+Gate on b865230: 207 tests passed, 1 ignored (needs the network), 1 integration test, 2 doc-tests. clippy --all-targets --all-features -D warnings clean. fmt clean.
