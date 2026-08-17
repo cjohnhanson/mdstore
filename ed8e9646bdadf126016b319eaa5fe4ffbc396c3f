@@ -1,0 +1,9 @@
+fresh-eyes: independent review agent (not the author) for the code; this commit carries no code. Reviewer is an agent, not a human.
+
+This commit closes one tracker issue and touches nothing else. No source file, no test, no manifest. The code review behind this branch is recorded on the notes for 0045941, b865230 and ea80dc6, and it stands unchanged.
+
+Mutation: none applied, and none is possible. A tracker file has no behavior to mutate. The mutation record on 0045941 carries forward: three guards re-fired on the merged tree and all three bit, at registry::tests::each_tool_owns_its_own_registry_path, userconfig::tests::the_read_and_the_write_route_through_the_tools_directory, and store::tests::a_plain_stem_is_one_document_and_never_a_path with tool::tests::a_name_that_is_not_one_plain_component_is_refused.
+
+The issue closed here, 6wsp, was diagnosed and verified by the release session, not by this branch. Its record states the assertion by name and the mutation that proved it: sync_source altered so an unresolvable pin returns Ok(()), which turned tisket to 29 passed and 1 failed and zettel to 25 passed and 1 failed, the single failure in each being that assertion.
+
+Gate unchanged from 0045941: 216 unit tests, 1 ignored for the network, 8 integration tests across two binaries, 2 doc-tests. clippy --all-targets --all-features -D warnings clean. fmt clean.
