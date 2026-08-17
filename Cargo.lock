@@ -1002,6 +1002,7 @@ checksum = "6d5446127b269706e85998065267ddd2ccc3550179da6780b22fe496175ccb20"
 dependencies = [
  "clru",
  "gix-chunk",
+ "gix-diff",
  "gix-error",
  "gix-features",
  "gix-hash",
@@ -1009,6 +1010,7 @@ dependencies = [
  "gix-object",
  "gix-path",
  "gix-tempfile",
+ "gix-traverse",
  "gix-zlib",
  "memmap2",
  "parking_lot",
@@ -1872,10 +1874,12 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "mdstore"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "cap-std",
  "gix",
+ "gix-odb",
+ "gix-pack",
  "nix",
  "rand",
  "reqwest",

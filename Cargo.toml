@@ -1,6 +1,6 @@
 [package]
 name = "mdstore"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 description = "Generic frontmattered markdown document store"
 license = "MIT"
@@ -27,6 +27,11 @@ gix = { version = "0.86", default-features = false, features = [
 # same reqwest gix uses, so one HTTP stack.
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 
+# The pack writer for the mirror's first sync, and the object-store
+# handle its Find side needs. Both already in the graph through gix;
+# these lines only make the edge direct.
+gix-pack = "0.73"
+gix-odb = "0.83"
 yaml_serde = "0.10"
 thiserror = "2"
 url = "2"

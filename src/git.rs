@@ -524,6 +524,10 @@ fn mirror_local(
         dst: &dst,
         buf: Vec::new(),
         seen: std::collections::HashSet::new(),
+        pack: match mode {
+            MirrorMode::Create => Some(Vec::new()),
+            MirrorMode::Update => None,
+        },
     };
     let walk = src.rev_walk(tips).all().map_err(|e| gix_err("mirror", e))?;
     for info in walk {
@@ -538,6 +542,9 @@ fn mirror_local(
     }
     for id in tag_objects {
         copier.copy(id)?;
+    }
+    if let Some(ids) = copier.pack.take() {
+        write_pack(&src, ids, &dst_dir.join("objects"))?;
     }
 
     // 3. Refs: every source head and tag upserted, every other dst head
@@ -597,11 +604,78 @@ fn mirror_local(
 }
 
 /// Copies objects from one repository's database to another's, once each.
+/// One pack for a create's whole closure.
+///
+/// The ids arrive in walk order, commits before their trees and
+/// blobs. The entries pipeline recompresses each object from the
+/// source odb, the bytes writer emits a v2 pack, and the bundle
+/// writer indexes that stream into objects/pack. The source is read
+/// through its own thread-safe handle because the entries pipeline
+/// wants Send, and a Repository's handle is not.
+fn write_pack(src: &gix::Repository, ids: Vec<gix::ObjectId>, dst_objects: &Path) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let count = u32::try_from(ids.len())
+        .map_err(|_| Error::InvalidStore("more than u32::MAX objects in one mirror".into()))?;
+    let find = gix_odb::at(src.git_dir().join("objects"))
+        .and_then(gix_odb::Handle::into_arc)
+        .map_err(|e| Error::InvalidStore(format!("open source objects: {e}")))?;
+    let counts: Vec<gix_pack::data::output::Count> = ids
+        .into_iter()
+        .map(|id| gix_pack::data::output::Count::from_data(id, None))
+        .collect();
+    let chunks = gix_pack::data::output::entry::iter_from_counts(
+        counts,
+        find,
+        Box::new(gix::progress::Discard),
+        gix_pack::data::output::entry::iter_from_counts::Options {
+            version: gix_pack::data::Version::V2,
+            allow_thin_pack: false,
+            ..Default::default()
+        },
+    );
+    let entries = gix::features::parallel::InOrderIter::from(chunks);
+    let mut pack = Vec::new();
+    let mut writer = gix_pack::data::output::bytes::FromEntriesIter::new(
+        entries,
+        &mut pack,
+        count,
+        gix_pack::data::Version::V2,
+        src.object_hash(),
+    );
+    for step in &mut writer {
+        step.map_err(|e| Error::InvalidStore(format!("write pack: {e}")))?;
+    }
+    drop(writer);
+    gix_pack::Bundle::write_to_directory(
+        &mut pack.as_slice(),
+        Some(&dst_objects.join("pack")),
+        &mut gix::progress::Discard,
+        &std::sync::atomic::AtomicBool::new(false),
+        None::<gix::objs::find::Never>,
+        gix_pack::bundle::write::Options {
+            thread_limit: None,
+            iteration_mode: gix_pack::data::input::Mode::Verify,
+            index_version: gix_pack::index::Version::default(),
+            object_hash: src.object_hash(),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| Error::InvalidStore(format!("index pack: {e}")))?;
+    Ok(())
+}
+
 struct Copier<'a> {
     src: &'a gix::Repository,
     dst: &'a gix::Repository,
     buf: Vec<u8>,
     seen: std::collections::HashSet<gix::ObjectId>,
+    /// On a create, ids collect here and one pack is written at the
+    /// end. Written loose, a 68 MB source became 10,395 files and a
+    /// 12 second first sync, and the slot only ever grew. An update
+    /// keeps the loose write for its small delta; None means loose.
+    pack: Option<Vec<gix::ObjectId>>,
 }
 
 impl Copier<'_> {
@@ -612,6 +686,18 @@ impl Copier<'_> {
             return Ok(());
         }
         if self.dst.objects.exists(&id) {
+            return Ok(());
+        }
+        if let Some(ids) = &mut self.pack {
+            // Existence in the source is still checked per object, so
+            // a hole in the source fails the mirror here, not at pack
+            // time with a less specific message.
+            if !self.src.objects.exists(&id) {
+                return Err(Error::InvalidStore(format!(
+                    "object {id} is missing from the source"
+                )));
+            }
+            ids.push(id);
             return Ok(());
         }
         let data = self
@@ -1027,6 +1113,90 @@ mod tests {
                     .next()
                     .is_none()
         );
+    }
+
+    /// A first sync writes a pack, not a loose file per object.
+    ///
+    /// The mirror wrote every copied object loose. A 68 MB source
+    /// produced 10,395 loose files and a 12 second first sync, and
+    /// the slot only ever grew. The create writes one pack now; an
+    /// update still writes its small delta loose.
+    #[test]
+    fn a_create_packs_its_objects_and_they_all_read_back() {
+        let _env = crate::env_lock();
+        let base = scratch("packed");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        // Enough files that loose-vs-packed is unambiguous.
+        let files: Vec<(String, String)> = (0..40)
+            .map(|i| {
+                (
+                    format!("notes/n{i:02}.md"),
+                    format!("---\ntitle: N{i}\n---\nbody {i}\n"),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let c1 = commit_files(&repo, &refs, "one");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let dir = ensure_clone(&url).unwrap();
+
+        let loose = count_loose(&dir);
+        let packs = std::fs::read_dir(dir.join("objects/pack"))
+            .map(|it| {
+                it.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "pack"))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert!(packs >= 1, "the create wrote no pack");
+        assert!(
+            loose < 5,
+            "the create wrote its objects loose: {loose} loose files"
+        );
+
+        // Every object reads back through the pack.
+        let rev = resolve_rev(&dir, None).unwrap();
+        assert_eq!(rev, c1.to_string());
+        for (path, body) in &files {
+            assert_eq!(&show(&dir, &rev, path).unwrap(), body, "{path} lost");
+        }
+
+        // An update after the create still lands, loose or not.
+        commit_files(
+            &repo,
+            &[("notes/extra.md", "---\ntitle: Extra\n---\n")],
+            "two",
+        );
+        fetch(&url).unwrap();
+        let r2 = resolve_rev(&dir, None).unwrap();
+        assert!(
+            show(&dir, &r2, "notes/extra.md").unwrap().contains("Extra"),
+            "the update's object is unreadable"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
+    fn count_loose(dir: &Path) -> usize {
+        let mut n = 0;
+        if let Ok(entries) = std::fs::read_dir(dir.join("objects")) {
+            for e in entries.flatten() {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if name.len() == 2 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                    n += std::fs::read_dir(e.path())
+                        .map(|it| it.count())
+                        .unwrap_or(0);
+                }
+            }
+        }
+        n
     }
 
     /// An orphan staging directory from an interrupted create is

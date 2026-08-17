@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.6
+
+### Changed
+
+- A first sync writes one pack instead of a loose file per object. A
+  68 MB source produced 10,395 loose files, and the slot only ever
+  grew. The mirror's walk collects the closure, the pack pipeline
+  recompresses it from the source odb, and the bundle writer indexes
+  the stream into objects/pack. An update still writes its small delta
+  loose. gix-pack and gix-odb become direct dependencies; both were
+  already in the graph through gix.
+
+
 ## 0.3.5
 
 ### Fixed
