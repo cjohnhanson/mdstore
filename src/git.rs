@@ -1439,13 +1439,27 @@ mod tests {
         std::fs::create_dir_all(&main).unwrap();
         let repo = init(&main);
         let c1 = commit_files(&repo, &[("notes/a.md", "---\ntitle: A\n---\n")], "one");
+        // The linked-worktree layout, written directly: this crate
+        // spawns no program, and its own integration test enforces
+        // that. A worktree is a .git FILE naming an administrative
+        // directory under the main repository, and that directory
+        // says where the common dir is.
         let linked = base.join("linked");
-        let ok = std::process::Command::new("git")
-            .args(["-C", main.to_str().unwrap(), "worktree", "add", "-q"])
-            .arg(&linked)
-            .status()
-            .is_ok_and(|s| s.success());
-        assert!(ok, "git worktree add failed, so this test asserts nothing");
+        std::fs::create_dir_all(&linked).unwrap();
+        let admin = main.join(".git/worktrees/linked");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(
+            admin.join("gitdir"),
+            format!("{}\n", linked.join(".git").display()),
+        )
+        .unwrap();
+        std::fs::write(admin.join("HEAD"), format!("{c1}\n")).unwrap();
         unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
 
         let url = linked.display().to_string();

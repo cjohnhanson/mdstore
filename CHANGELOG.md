@@ -28,7 +28,8 @@
   anchored-to-one-machine guard refuses it first, because the guard
   resolves a relative git url against the process directory and so
   sees an absolute path. That guard behaviour is pre-existing and
-  wrong on its own terms; filed separately. The declared text reached the cache untouched, so
+  wrong on its own terms; filed separately. The declared text
+  reached the cache untouched, so
   `git: ../up` in two roots keyed one slot, the second root read the
   first root's mirror, and the fetch resolved the path against the
   process cwd. The walk resolves it once, after the location guards,
