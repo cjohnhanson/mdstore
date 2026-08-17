@@ -1,0 +1,33 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the one commit covering rename, remove_dir and dir_is_empty against a link.
+
+Verdict LAND.
+
+The reviewer verified the cap-std premise at source rather than
+accepting it. A case-insensitive grep for renameat2, renameatx and
+RENAME_EXCL across cap-std 4.0.2 and cap-primitives 4.0.2 returns
+nothing; the only public rename takes no flags and bottoms out in a
+plain rustix::fs::renameat. macOS declares renameatx_np with
+RENAME_EXCL, and Linux has renameat2(RENAME_NOREPLACE), so the
+operating system can refuse atomically and cap-std cannot ask it to.
+rustix, already in the tree, exposes renameat_with, so an atomic
+refusal is reachable one layer down. The doc's narrower claim is right;
+a broader one would not have been.
+
+The half-guard mutation was isolated per method, so no earlier
+assertion could mask a later one. Each of rename, remove_dir and
+dir_is_empty is killed by its own assertion, and is_document, remove
+and scan by theirs.
+
+The assertions run through the link rather than at it. A guard asking
+whether a path is itself a symlink answers no for a real directory
+beyond one, and the ambient action then escapes. Asserting on the link
+name alone would have left that mutation alive.
+
+Four half-guards still survive, all one shape: a check correct at the
+instant it runs, followed by an action that resolves the path a second
+time. No deterministic test separates them from correct code. One of
+them, re-opening the store root per call, is the regression the module
+header records as already fixed once and which no test enforces. Filed
+alongside the store-root issue.
+
+197 tests with --all-features, clippy clean, fmt clean.
