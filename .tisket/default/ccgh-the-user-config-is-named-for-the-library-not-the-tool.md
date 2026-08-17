@@ -128,3 +128,30 @@ Consumers already moved from a git rev to a crates.io dependency, so the planned
 6wsp handed to that session, with the reproduction and the bisect range. It needs the answer before tagging, because the suspect commit is already inside 0.3.6 and the release workflow does not run missouri.
 
 sv4p to be fixed on this branch before the pull request opens, because publication is what widens the caller set from three compile-time constants to anyone. It is not a traversal in any shipped binary today, and the issue should not claim it is. One open design point: rejecting a malformed name needs its own error, because None already means the home did not resolve, and reusing it makes the consumer's message lie.
+## Rounds three and four, and one issue retracted (2026-08-17)
+
+Round three found one blocker, and it was a weakened assertion. The seam's write test asserted a path suffix rather than equality against the home it was handed, so save_root_in could ignore that home and still pass. The mutation that exposes it is the refactor a careless hand writes, reaching for passwd_home() inside the inner function, and running that mutation writes into the real ~/.config before the assertion fires. A substituted temp home proves the same thing safely. Now equality.
+
+Round four found the same failure mode a third time: a comment of mine asserting a containment the code did not have. Worse than the earlier two, because the change had also moved the code the less safe way. For tool = /etc, a per-component join gives /etc/config.yml and escapes, while the format string with its literal .config/ prefix gives ~/.config//etc/config.yml and contains. The format string is restored. ToolName is the first layer and the literal prefix is the second.
+
+Three gaps closed in the same commit. is_plain_stem accepted a trailing separator under an off-by-one loop bound with the whole suite green, because every existing case put the separator in the interior; a/, a backslash and a NUL are now cases in both tests. ToolName::new rejects any colon, because a component carrying a Windows drive prefix replaces the accumulated path and this crate compiles for non-unix. The compile-time rejection is a compile_fail doctest rather than a claim in prose; a const item with a bad literal is a hard E0080 and fires even when nothing reads the const.
+
+sv4p is resolved rather than deferred. The tool name is a validated type. Validation reuses store::is_plain_stem, which already encoded the rule and already argued the principle in its own doc comment: one predicate serves every tool. It was not const, so it is now, rewritten as a byte walk and proven equivalent over 1.4 million inputs by the reviewer. UTF-8 is self-synchronizing, so no multi-byte scalar carries a byte below 0x80, which is why a byte scan cannot get a false positive from a multi-byte sequence.
+
+Vocabulary.tool is the same type now, so a consumer holds one const for the vocabulary, the config and the registry. That closes the half of the round-one finding that let a consumer print an error naming a file it never reads.
+
+bzs1 RETRACTED and closed. The claim was that save_root reports a path inside the home while the bytes land outside. The physical file does sit in the link target, and the reported path still reads back: a load through it returns the written root_store. No false statement, nothing to fix, and a write that follows a symlink is what a symlink is for. The error survived three messages because the first test asserted only that the file exists in the link target, which confirms a symlink was followed and nothing more.
+
+The tell that caught it: an inverted test, written to fail until the defect was fixed, passed on its first run. A test written to fail that does not is a statement about the premise, not about the code.
+
+## Release coordination, current (2026-08-17)
+
+6wsp is diagnosed by the release session. mdstore's sync_source resolves the declared pin after a fetch, so a pin deleted upstream fails the sync rather than reporting success and failing later on read. zettel's fixture expected exit 0 and now expects the refusal, which matches the contract the suite already sets in its ssh assertion. Closing here on per-tool-config, with the assertion name and the mutation verdict, when that session's reviewer returns.
+
+A merge order binds six repos. gaff reaches main first, because scripts/merge-gate.sh in the release branches ends with gaff reviews check and the profile gaff lacks that subcommand. Then co.d takes a flake update and hms. Then the other five. Confirmed against the profile binary: bare reviews exists, check does not.
+
+.gaff/gaff.yml conflicts between per-tool-config and the release branch. This branch has no reviews: key; theirs declares fresh-eyes and mutation. The bootstrap forces their branch first, so the rebase takes their version. Do not add the key here.
+
+An absent reviews: key refuses every push, which is correct, but the message does not tell a reader what to write. Filed on the release side rather than fixed here.
+
+Tip db5151a. 207 tests, 1 ignored for the network, 1 integration test, 2 doc-tests, clippy and fmt clean under the profile gaff. Round five running for a clean verdict, because a sign-off written on a FIX FIRST verdict is worth nothing.
