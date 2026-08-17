@@ -58,11 +58,25 @@ printf '%s\n' "$gate_refs" | while read -r _local_ref local_sha remote_ref _remo
   [ "$local_sha" = "$zero" ] && continue
   case "$remote_ref" in refs/notes/*) continue ;; esac
   commit_sha=$(git rev-parse --quiet --verify "$local_sha^{commit}" || echo "$local_sha")
-  if ! git notes --ref=reviews show "$commit_sha" 2>/dev/null | grep -q "fresh-eyes"; then
+  note=$(git notes --ref=reviews show "$commit_sha" 2>/dev/null)
+  if ! printf '%s' "$note" | grep -q "fresh-eyes"; then
     echo "merge-gate: no fresh-eyes review note on $commit_sha (pushing to $remote_ref)." >&2
     echo "  A reviewer who did not write the change reads it and its test" >&2
     echo "  coverage first. Then record it:" >&2
     echo "    git notes --ref=reviews add -m 'fresh-eyes: <reviewer> <scope>' $commit_sha" >&2
+    exit 1
+  fi
+  # A review that read the change is not enough. Every regression that
+  # reached a reviewed tip on 2026-08-16 shipped with green tests and a
+  # fresh-eyes note; every one was caught only when the reviewer put
+  # the bug back and watched a named test go red. A note that does not
+  # say a mutation was applied describes a reading, not a verification.
+  if ! printf '%s' "$note" | grep -qi "mutation"; then
+    echo "merge-gate: the review note on $commit_sha does not mention a mutation." >&2
+    echo "  A test for a guard is verified by removing the guard and seeing" >&2
+    echo "  the test go red. Say in the note which mutations were applied" >&2
+    echo "  and which test caught each. A note that only says the change was" >&2
+    echo "  read is not a review of its tests." >&2
     exit 1
   fi
 done
