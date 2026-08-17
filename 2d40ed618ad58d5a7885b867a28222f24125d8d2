@@ -1,0 +1,32 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the two commits carrying the accepted confinement follow-ups.
+
+Verdict LAND on this tip after two rounds.
+
+Round one returned DO-NOT-LAND on one item: four of the twelve climb
+guards survived their own removal. present_but_irregular was never
+probed, only rename's destination climbed, and remove_dir and
+dir_is_empty were probed with a non-empty target, where ENOTEMPTY
+stands in for the refusal — the same masking this suite had already
+been caught by once.
+
+Round two re-ran the mutation pass independently: 13 of 13 caught.
+Twelve single-site guard deletions each die on their own named
+assertion with no cascades, and the whole-guard-off mutant fails two
+tests. The reviewer established no assertion passes for a wrong
+reason: the mutants demonstrate the rename source is otherwise
+movable, the climbed path resolves to a real directory, and
+docs/hollow is genuinely empty and removable through the climb.
+
+Also proved in round one: whole-component semantics, with
+docs/..hidden and notes..md and ..md accepted and every true parent
+component refused, and the right split on Windows separators per
+platform; the lexical refusal reads as refused_by_confinement while a
+mode-000 EACCES reads as a fault; the deleted NotFound tiebreaker
+hides nothing, checked against the old bug's exact shape rebuilt with
+a symlink; consumer smokes green for tisket (a 0.3.1 to 0.3.3 jump)
+and zettel (0.3.0 to 0.3.3); the changelog claim that no consumer
+builds a name with '..' verified against all three, which gate caller
+text through is_plain_stem before any join; and both new module-doc
+paragraphs match measured behaviour.
+
+199 tests with --all-features, clippy clean, fmt clean.
