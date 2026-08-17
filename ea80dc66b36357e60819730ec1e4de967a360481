@@ -1,0 +1,14 @@
+fresh-eyes: independent review agent (not the author). Reviewer is an agent, not a human.
+
+Two reviews stand behind this tip.
+
+1. Five rounds over the code, ending SHIP on b865230, the parent. Every guard verified by putting the bug back. The note on b865230 lists each mutation and the named test that caught it, including one that no test catches: config_path_in reverted to a per-component join leaves the suite green, because ToolName is total and the second layer is unreachable. Recorded rather than covered.
+
+2. An independent review of the pull request body against the code, which found three claims in code comments that the code does not support. This commit fixes those and nothing else:
+- resolve.rs claimed one type makes a mismatched tool name a compile error. False. Vocabulary.tool unifies the type, not the value: a consumer can build a vocabulary with one name and load its config with another, and nothing catches it. The comment now says what changed, which is that the message names the file the config path builds.
+- tool.rs credited confined::StoreDir with containment the operating system enforces. Overstated on macOS. cap-primitives uses RESOLVE_BENEATH on Linux and FreeBSD only; every other target resolves in userspace. The comment now says an open directory handle that confines every path beneath the root. The same overstatement in confined.rs predates this branch and is filed as i822.
+- tool.rs named StoreContent, which lives in store, and said five review rounds where confined.rs says four. Both corrected.
+
+Mutation: none applied for this commit, and none is possible. It changes three doc comments and adds one tracker file. No code path, no signature and no test changes, so the b865230 mutation record carries forward unchanged. A comment cannot be held by a test, which is why the review that reads comments against code is the control here.
+
+Gate on ea80dc6: 207 tests passed, 0 failed, 1 ignored (needs the network), 1 integration test, 2 doc-tests. clippy --all-targets --all-features -D warnings clean. fmt clean.
