@@ -1,13 +1,18 @@
 # Changelog
 
-## 0.4.0
+## 0.3.1
 
 ### Added
 
 - `StoreDir::rename`, `StoreDir::remove_dir` and `StoreDir::dir_is_empty`.
   A consumer that moves a document between directories of one store had
   no confined way to do it, so it fell back to `std::fs` on a path it
-  built. Both ends of a rename go through the handle.
+  built. Both ends of a rename go through the handle. A rename replaces
+  an existing destination, and moves a directory as well as a file.
+
+  Additive, so the patch field moves. Under Cargo's 0.x rules the minor
+  field is the breaking slot, and a bump there would make every consumer
+  pinned at 0.3 edit a manifest for a change that only adds.
 
 ## 0.3.0
 

@@ -239,7 +239,9 @@ impl StoreDir {
 
     /// Remove one empty directory inside the store.
     pub fn remove_dir(&self, rel: &str) -> Result<()> {
-        self.dir.remove_dir(rel).map_err(|e| self.io_error(rel, &e))
+        self.dir
+            .remove_dir(Self::at(rel))
+            .map_err(|e| self.io_error(rel, &e))
     }
 
     /// True when the directory holds no entry at all.
@@ -680,6 +682,19 @@ mod tests {
             .unwrap();
         assert_eq!(f.store.read("docs/.closed/note.md").unwrap(), "a note");
         assert!(!f.store.is_document("docs/note.md"));
+
+        // The refused inbound move must not have created anything.
+        assert!(!f.store.is_document("docs/taken.md"));
+
+        // An existing destination is replaced and what it held is
+        // gone. This is not an accident, and a consumer that must not
+        // overwrite tests the name first. Pinned so the behaviour
+        // cannot change without a decision.
+        f.store.write("docs/a.md", "AAA").unwrap();
+        f.store.write("docs/b.md", "BBB").unwrap();
+        f.store.rename("docs/a.md", "docs/b.md").unwrap();
+        assert_eq!(f.store.read("docs/b.md").unwrap(), "AAA");
+        assert!(!f.store.is_document("docs/a.md"));
     }
 
     #[test]
@@ -699,9 +714,27 @@ mod tests {
         f.store.remove_dir("docs/.closed").unwrap();
 
         // A path that leaves the store is never empty and never
-        // removed, whatever sits there.
-        assert!(!f.store.dir_is_empty("../outside"));
-        assert!(f.store.remove_dir("../outside").is_err());
+        // removed. The directory outside must be EMPTY, or both
+        // assertions pass on ENOTEMPTY and prove nothing: an ambient
+        // remove_dir would be refused for holding a file, not for
+        // leaving the store, and an ambient read_dir would report the
+        // file rather than the refusal.
+        let victim = f.base.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        assert!(!f.store.dir_is_empty("../victim"));
+        assert!(f.store.remove_dir("../victim").is_err());
+        assert!(
+            victim.is_dir(),
+            "an empty directory outside the store was removed"
+        );
+
+        // The store's own empty directory is still told apart, so the
+        // assertion above is about the escape and not about emptiness.
+        f.store.create_dir_all("docs/inside").unwrap();
+        assert!(f.store.dir_is_empty("docs/inside"));
+        f.store.remove_dir("docs/inside").unwrap();
+        assert!(!f.base.join("store/docs/inside").exists());
+        assert!(f.base.join("store/docs").is_dir(), "the parent went too");
         assert!(f.outside_is_intact());
     }
 
