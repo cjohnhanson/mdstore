@@ -224,13 +224,31 @@ impl StoreDir {
             .map_err(|e| self.io_error(rel, &e))
     }
 
-    /// Move one file to another name inside the store.
+    /// Move one entry to another name inside the store.
     ///
     /// Both names go through the handle, so neither end can leave the
-    /// store. The rename is one operation, so a reader sees the file
-    /// at the old name or the new one and never at neither. A consumer
+    /// store. The move is one operation, so a reader sees the entry at
+    /// the old name or the new one and never at neither. A consumer
     /// that moved a document by reading, writing and removing left a
     /// copy at both names when the remove failed.
+    ///
+    /// # This destroys an existing destination
+    ///
+    /// An entry already at `to` is replaced, and what it held is gone.
+    /// No error is raised. This matches `renameat`, and refusing would
+    /// mean testing the name first, which is a check that can go stale
+    /// between the test and the move. A handle exists so that there is
+    /// no such check to get wrong, so the primitive is not wrapped in
+    /// one here.
+    ///
+    /// A consumer that must not lose a document needs a destination
+    /// that cannot collide. Testing the name first has the same stale
+    /// window and only looks safer.
+    ///
+    /// # A directory moves too
+    ///
+    /// A directory moves with everything under it, and replaces an
+    /// empty directory at `to`. The name says entry for that reason.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.dir
             .rename(from, &self.dir, to)
@@ -238,6 +256,11 @@ impl StoreDir {
     }
 
     /// Remove one empty directory inside the store.
+    ///
+    /// The store root itself is refused. An empty root answers true to
+    /// [`Self::dir_is_empty`] and errors here, which is the one input
+    /// where that pair disagrees: a store cannot unlink its own root
+    /// through its own handle.
     pub fn remove_dir(&self, rel: &str) -> Result<()> {
         self.dir
             .remove_dir(Self::at(rel))
@@ -685,16 +708,29 @@ mod tests {
 
         // The refused inbound move must not have created anything.
         assert!(!f.store.is_document("docs/taken.md"));
+    }
 
-        // An existing destination is replaced and what it held is
-        // gone. This is not an accident, and a consumer that must not
-        // overwrite tests the name first. Pinned so the behaviour
-        // cannot change without a decision.
+    /// A move replaces what sat at the destination, and raises no
+    /// error. Pinned on its own, because it is a contract a consumer
+    /// looks for by name, and it does not belong under a confinement
+    /// claim.
+    #[test]
+    fn a_move_replaces_what_sat_at_the_destination() {
+        let f = Fixture::new("replace");
         f.store.write("docs/a.md", "AAA").unwrap();
         f.store.write("docs/b.md", "BBB").unwrap();
         f.store.rename("docs/a.md", "docs/b.md").unwrap();
-        assert_eq!(f.store.read("docs/b.md").unwrap(), "AAA");
-        assert!(!f.store.is_document("docs/a.md"));
+        assert_eq!(f.store.read("docs/b.md").unwrap(), "AAA", "BBB survived");
+        assert!(!f.store.is_document("docs/a.md"), "the source stayed");
+
+        // A directory replaces an empty directory the same way, and
+        // the changelog advertises that a directory moves.
+        f.store.create_dir_all("docs/src").unwrap();
+        f.store.write("docs/src/kept.md", "KEPT").unwrap();
+        f.store.create_dir_all("docs/dst").unwrap();
+        f.store.rename("docs/src", "docs/dst").unwrap();
+        assert_eq!(f.store.read("docs/dst/kept.md").unwrap(), "KEPT");
+        assert!(!f.store.dir_is_empty("docs/dst"));
     }
 
     #[test]
@@ -726,6 +762,23 @@ mod tests {
         assert!(
             victim.is_dir(),
             "an empty directory outside the store was removed"
+        );
+
+        // The same directory by an absolute path. A guard written on
+        // '..' alone answers this one wrong: an absolute path names
+        // the same directory and carries no parent component.
+        let abs = victim.to_string_lossy().into_owned();
+        assert!(
+            !f.store.dir_is_empty(&abs),
+            "an absolute path outside the store was called empty"
+        );
+        assert!(
+            f.store.remove_dir(&abs).is_err(),
+            "an absolute path outside the store was removed"
+        );
+        assert!(
+            victim.is_dir(),
+            "the directory named absolutely was removed"
         );
 
         // The store's own empty directory is still told apart, so the
