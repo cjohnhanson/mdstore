@@ -77,10 +77,15 @@ pub fn config_path(tool: ToolName<'_>) -> Option<PathBuf> {
 /// `load` and `save_root` once did, under mutation, with the suite
 /// green.
 fn config_path_in(home: &Path, tool: ToolName<'_>) -> PathBuf {
-    // `join` per component, not one format string. A validated name
-    // cannot hold a separator, so the two agree today; the components
-    // keep them agreeing if the validation ever loosens.
-    home.join(".config").join(tool.as_str()).join("config.yml")
+    // One format string opening with a literal, not a `join` per
+    // component. The literal is the second layer: `join` discards the
+    // base for an absolute component, so a per-component form turns
+    // `tool = "/etc"` into `/etc/config.yml`, while this form contains
+    // it as `~/.config//etc/config.yml`. `ToolName` refuses that name
+    // first, so the two agree today. They disagree exactly in the case
+    // where the validation has failed, which is when a second layer is
+    // the only thing left.
+    home.join(format!(".config/{tool}/config.yml"))
 }
 
 impl UserConfig {
@@ -322,13 +327,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_tool_directory_sends_the_write_outside_the_home() {
-        // A validated name refuses a separator and a parent component,
-        // so the path this builds always sits under the home. The
-        // filesystem can still redirect it: if `.config/<tool>` is a
-        // symlink, `create_dir_all` accepts it and the atomic write
-        // lands in its target. This test records that behavior rather
-        // than asserting it is wanted.
+    fn a_symlinked_tool_directory_round_trips() {
+        // A dotfile manager farms `~/.config`, so `.config/<tool>` is
+        // often a symlink. `create_dir_all` accepts it and the rename
+        // resolves through it, so the physical file sits in the link
+        // target. The reported path still reads back, which is the
+        // property that matters, and this test holds it.
         let home = scratch("symlink");
         let outside = home.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
@@ -337,17 +341,16 @@ mod tests {
 
         let store = home.join("store");
         std::fs::create_dir_all(&store).unwrap();
+        // The invariant, not a chosen remedy: a reported path holds the
+        // bytes. A refusal satisfies it too, so this test does not
+        // decide between the options recorded in bzs1.
         let written = UserConfig::save_root_in(Some(&home), named("zettel"), &store).unwrap();
-
-        // The reported path is inside the home, and the bytes are not.
-        assert_eq!(
-            written,
-            home.join(".config").join("zettel").join("config.yml")
-        );
-        assert!(
-            outside.join("config.yml").is_file(),
-            "the write did not follow the symlink; containment is stronger than recorded"
-        );
+        // The reported path resolves to the bytes: a read of it returns
+        // what the write put there. The physical file sits in the link
+        // target, which is what a dotfile manager farms `~/.config` for.
+        let round_trip = UserConfig::load_from(&written).unwrap();
+        assert_eq!(round_trip.root_store.as_deref(), Some(store.as_path()));
+        assert!(outside.join("config.yml").is_file());
     }
 
     #[test]

@@ -2159,6 +2159,12 @@ mod tests {
         assert!(!is_plain_stem("/etc/passwd"));
         assert!(!is_plain_stem("sub/note"));
         assert!(!is_plain_stem("sub\\note"));
+        // A separator or a NUL in the final byte. Every other case puts
+        // one in the interior, so an off-by-one loop bound passed the
+        // whole suite.
+        assert!(!is_plain_stem("a/"));
+        assert!(!is_plain_stem("a\\"));
+        assert!(!is_plain_stem("a\0"));
         assert!(!is_plain_stem(".hidden"));
         assert!(!is_plain_stem("with\0nul"));
     }

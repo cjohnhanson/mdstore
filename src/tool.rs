@@ -18,6 +18,20 @@
 //! assert_eq!(TOOL.as_str(), "zettel");
 //! ```
 //!
+//! A `const` item with a bad literal fails to compile, and it fails
+//! whether or not anything reads it:
+//!
+//! ```compile_fail
+//! use mdstore::ToolName;
+//! const BAD: ToolName<'static> = match ToolName::new("../escape") {
+//!     Some(t) => t,
+//!     None => panic!("the tool name must be one plain path component"),
+//! };
+//! ```
+//!
+//! A `let` binding with the same match compiles and panics at run time
+//! instead, so the guarantee belongs to the `const` shape above.
+//!
 //! A caller that arrives with a runtime name gets `None` and decides
 //! what to do. Publication is what creates that caller.
 
@@ -31,17 +45,32 @@ pub struct ToolName<'a>(&'a str);
 impl<'a> ToolName<'a> {
     /// The name, or `None` when it is not one plain path component.
     ///
-    /// Rejects an empty name, `.`, `..`, any hidden name, anything
-    /// holding a path separator or a NUL, and a leading `-`, which would
-    /// read as a flag wherever the name is printed in a command. Never
-    /// normalises: a rejected name is the caller's to fix.
+    /// Rejects an empty name, `.`, `..`, any hidden name, and anything
+    /// holding a path separator or a NUL, through `is_plain_stem`. Adds
+    /// two rules of its own, because this name becomes a path component
+    /// on every platform and is printed in commands:
+    ///
+    /// - a leading `-`, which reads as a flag;
+    /// - a `:`, because Windows treats a component carrying a drive
+    ///   prefix as a fresh root, so `Path::push` would discard the base
+    ///   and `"C:"` would escape the home.
+    ///
+    /// Never normalises: a rejected name is the caller's to fix.
     #[must_use]
     pub const fn new(name: &'a str) -> Option<Self> {
         if !crate::store::is_plain_stem(name) {
             return None;
         }
-        if name.as_bytes()[0] == b'-' {
+        let b = name.as_bytes();
+        if b[0] == b'-' {
             return None;
+        }
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b':' {
+                return None;
+            }
+            i += 1;
         }
         Some(ToolName(name))
     }
@@ -82,6 +111,9 @@ mod tests {
             ".hidden",
             "with\0nul",
             "-flag",
+            "a/",
+            "C:",
+            "c:name",
         ] {
             assert!(ToolName::new(bad).is_none(), "{bad:?} was accepted");
         }
