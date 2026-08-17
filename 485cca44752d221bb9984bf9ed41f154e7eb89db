@@ -1,0 +1,29 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the sync pin verification.
+
+Verdict LAND on 365427c. This tip is 485cca4, one commit past it,
+changing one error message the reviewer themselves flagged and the
+comment above it; the covering test still passes and asserts on the
+kept phrase.
+
+Verified by execution: both tests fail at their expect_err under the
+fetch-only mutation, for the stated reason. A 40-char fake oid cannot
+accidentally resolve, because gix treats even full-length hex as a
+prefix lookup against the odb; a short prefix of a real commit does
+resolve, so short-hash pins are accepted consistently. An unreachable
+source keeps the fetch error and never mentions the pin. A corrupted
+slot self-heals on re-sync. All three consumers collect per-member
+results with no ? in the loop, so the new Err is one member's outcome
+and nothing aborts.
+
+Two findings, one taken and one recorded. The no-commits message could
+lie for a HEAD naming a deleted branch while other branches held
+commits — built and proved; the message now leads with what is known,
+that HEAD does not resolve, and names both causes. And a force-pushed
+pin still reports synced on a machine whose cache holds the bytes,
+while a fresh machine says pin not found: content-addressed and
+defensible, recorded as a doc note for someday.
+
+Blob declarations carry no rev, so the lying-pin shape cannot exist
+there, and blob sync fails loudly on a missing index.
+
+201 tests with --all-features, clippy clean, fmt clean.
