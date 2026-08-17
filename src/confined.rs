@@ -871,6 +871,21 @@ mod tests {
         assert_eq!(wrong.io_kind(), Some(std::io::ErrorKind::NotADirectory));
         assert!(!wrong.refused_by_confinement());
 
+        // An errno-less error of another kind is not a refusal either.
+        // The predicate checks the kind as well as the errno, and
+        // dropping the kind check left every test green: nothing fed
+        // it an errno-less non-PermissionDenied. cap-std produces one
+        // when create_dir_all cannot make the whole tree.
+        let synthetic = Error::StorePath {
+            rel: "x".into(),
+            root: "y".into(),
+            source: std::io::Error::other("failed to create whole tree"),
+        };
+        assert!(
+            !synthetic.refused_by_confinement(),
+            "an errno-less Other read as a refusal"
+        );
+
         let mut perms = std::fs::metadata(&locked).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&locked, perms).unwrap();

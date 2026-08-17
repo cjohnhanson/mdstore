@@ -1,4 +1,10 @@
+/// Every way an mdstore operation can fail.
+///
+/// Non-exhaustive, so a variant can be added without a major version.
+/// Every consumer already matched with a wildcard arm; this makes the
+/// compiler require what they were doing by convention.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("missing frontmatter delimiter")]
     MissingFrontmatter,
@@ -42,12 +48,6 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// The reason a store path operation failed, when there is one.
-    ///
-    /// A consumer uses this to tell a refusal from a fault. A path the
-    /// store refuses, or a name that is not a directory, means the
-    /// store holds nothing there. A permissions error or an I/O error
-    /// means something is wrong and must not read as empty.
     /// True when the store refused the path rather than failing on it.
     ///
     /// A refusal means the store holds nothing there, and a consumer
@@ -69,6 +69,12 @@ impl Error {
         }
     }
 
+    /// The reason a store path operation failed, when there is one.
+    ///
+    /// The kind alone does not separate a refusal from a fault; see
+    /// [`Self::refused_by_confinement`] for that. This is for a
+    /// consumer that wants to know which fault: a name that is not a
+    /// directory, a permissions error, a real I/O error.
     #[must_use]
     pub fn io_kind(&self) -> Option<std::io::ErrorKind> {
         match self {

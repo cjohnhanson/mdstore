@@ -2,8 +2,19 @@
 
 ## 0.3.2
 
+### Changed
+
+- `Error` is `#[non_exhaustive]`. A variant added to an exhaustive
+  public enum is a major change, and this release adds one. Every
+  consumer already matched with a wildcard arm; the attribute makes the
+  compiler require it. A consumer matching exhaustively without a
+  wildcard would not compile against 0.3.2, and none exists.
+
 ### Added
 
+- `Error::StorePath { rel, root, source }`, carrying the io error a
+  store path operation failed with. `InvalidStore` had a formatted
+  string in its place.
 - `Error::refused_by_confinement` and `Error::io_kind`. A consumer must
   tell a refusal from a fault: a directory the store refuses holds no
   documents, and a directory it cannot read is a fault that must not
