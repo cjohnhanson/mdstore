@@ -8,13 +8,15 @@
 # Write a note only after an independent reviewer has read the change
 # and its test coverage. A note without a review makes the gate false.
 #
-# The gate has three known limits. The suites test the working tree,
+# The gate has four known limits. The suites test the working tree,
 # not the pushed commit. A fresh clone has no hooks until `gaff init
-# --git` runs; `gaff check` reports that state. And the note checks are
+# --git` runs; `gaff check` reports that state. The note checks are
 # claim checks: the gate cannot verify a review happened, or that a
 # mutation was applied. A note reading "mutations: none" passes. What
 # the check changes is what a reviewer writing in good faith thinks to
-# do before writing the note.
+# do before writing the note. And a merge queue or a direct push by
+# GitHub runs no pre-push hook, so CI on the push event is what gates
+# those.
 set -e
 
 # git sends the ref list on stdin. The first reader spends the stream.
@@ -22,16 +24,22 @@ set -e
 # read stdin first, the loop below would see EOF and check nothing.
 gate_refs=$(cat)
 
-echo "merge-gate: cargo test"
-# --all-features, because a feature that is off by default is still
-# shipped code. The gate once built without mcp and never compiled it.
-# Capture the output. On red, the failing test's name is the first
-# thing a reader needs, and /dev/null once hid it from the CI log.
-test_out=$(cargo test --workspace --all-features --quiet 2>&1 </dev/null) || {
-    echo "merge-gate: cargo test failed. Nothing merges on red tests." >&2
-    printf '%s\n' "$test_out" | tail -40 >&2
-    exit 1
-}
+# tests/merge_gate_guard.rs runs this script to cover the note branch.
+# Without this escape it would call cargo test from inside cargo test.
+# Nothing else sets the variable, and a caller that sets it skips only
+# the sections a test run has already covered.
+if [ -z "${MERGE_GATE_SKIP_TESTS:-}" ]; then
+    echo "merge-gate: cargo test"
+    # --all-features, because a feature that is off by default is still
+    # shipped code. The gate once built without mcp and never compiled it.
+    # Capture the output. On red, the failing test's name is the first
+    # thing a reader needs, and /dev/null once hid it from the CI log.
+    test_out=$(cargo test --workspace --all-features --quiet 2>&1 </dev/null) || {
+        echo "merge-gate: cargo test failed. Nothing merges on red tests." >&2
+        printf '%s\n' "$test_out" | tail -40 >&2
+        exit 1
+    }
+fi
 
 # The CI runner has no nix, but it preinstalls the packages the
 # suites declare. When CI is set, missouri uses the preinstalled
@@ -41,7 +49,7 @@ if [ -n "${CI:-}" ]; then
     export MISSOURI_SANDBOX
 fi
 
-if [ -d tests/missouri ]; then
+if [ -d tests/missouri ] && [ -z "${MERGE_GATE_SKIP_TESTS:-}" ]; then
     command -v missouri >/dev/null || {
         echo "merge-gate: missouri is not on PATH and tests/missouri exists." >&2
         exit 1
@@ -62,12 +70,26 @@ if [ -d tests/missouri ]; then
 fi
 
 # A pull request event checks out a merge commit GitHub creates. No
-# reviewer saw that commit, so no note can sit on it, and the loop
-# below would refuse every pull request. A push to main carries the
-# note check instead.
-if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
-    echo "merge-gate: pull request, tests only. A push to main checks review notes."
-    exit 0
+# reviewer saw that commit, so the loop below would refuse every pull
+# request. Check the branch head instead, which is what a reviewer
+# read. Both variables come from the runner, so a local shell that
+# sets one still meets the loop below.
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+    command -v jq >/dev/null || {
+        echo "merge-gate: jq is absent, so the pull request head sha cannot be read." >&2
+        exit 1
+    }
+    head_sha=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH:-/dev/null}")
+    case "$head_sha" in
+    [0-9a-f]*) ;;
+    *)
+        echo "merge-gate: pull request head sha unreadable. Refusing." >&2
+        exit 1
+        ;;
+    esac
+    git fetch --quiet origin "+refs/notes/reviews:refs/notes/reviews" 2>/dev/null || true
+    gate_refs="refs/heads/pr $head_sha refs/heads/main 0000000000000000000000000000000000000000"
+    echo "merge-gate: pull request. Reading the review note on $head_sha."
 fi
 
 # Each pushed tip needs a review note. For an annotated tag, the note

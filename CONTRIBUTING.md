@@ -39,16 +39,14 @@ tisket issue show <id>
 Two gates decide whether a change lands. CI runs both as the check
 named `gate`. `main` is protected and requires that check.
 
-**A pull request cannot currently pass the gate.** CI checks out the
-merge commit that GitHub creates for the pull request. The merge gate
-then looks for a review note on that commit, and no such note can
-exist. Open the pull request anyway. A maintainer reviews it, records
-the note, and lands it. Issue `nk4l` tracks the fix.
+A pull request needs a review note on its head commit, the same as a
+push. CI checks out a merge commit GitHub creates, which no reviewer
+saw, so the gate reads the note from the branch head instead.
 
-The commit gate runs three things:
+The commit gate runs two checks, and refuses a commit when unstaged
+Rust changes differ from the index:
 
 ```sh
-# 1. It refuses a commit when unstaged .rs changes differ from the index.
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```

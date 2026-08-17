@@ -1,7 +1,8 @@
 # Build output. The whole directory, never a subset — a partial rule is
 # how 7,000 build artifacts reached a public branch once already.
 /target
-result
+/result
+/result-*
 
 # Coding-agent and editor local state. Machine-specific, and one of
 # these reached public history before.

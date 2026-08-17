@@ -1,6 +1,6 @@
 ---
 title: The gate cannot pass on a pull request
-status: todo
+status: done
 priority: '1'
 assignee: null
 due_date: null
@@ -9,7 +9,7 @@ labels:
 - blocker
 depends_on: []
 created: 2026-08-17T16:53:57Z
-updated: 2026-08-17T16:53:57Z
+updated: 2026-08-17T17:56:15Z
 ---
 
 Branch protection on main requires the check named `gate`. A pull request can never turn it green, so no pull request can merge.
@@ -58,3 +58,14 @@ The failure line:
 Pushing refs/notes/reviews to the remote does not help. The note exists on 5ea220e. No note can exist on a merge commit GitHub creates after the fact.
 
 So the reasoning from gaff src/cli.rs run_ci holds, and observation matches it.
+## Fixed 2026-08-17
+
+scripts/merge-gate.sh reads the review note from the pull request head instead of the checked-out merge commit. A pull request is now gated on a note for the commit a reviewer read.
+
+Option 2 from the list above, not option 1. Skipping the note on a pull request was the first attempt and a cold reviewer refused it: a pull request merged through GitHub produces a push made by GitHub, so no pre-push hook runs and no note would ever be checked.
+
+The guard also requires GITHUB_ACTIONS=true. A single environment variable set in a local shell no longer turns the note check off.
+
+Verified: a pull request event against a head with no note exits 1. A local push with GITHUB_EVENT_NAME set still demands a note.
+
+Remaining limit, recorded in the script header: a merge queue or a direct push made by GitHub runs no pre-push hook. CI on the push event gates those.
