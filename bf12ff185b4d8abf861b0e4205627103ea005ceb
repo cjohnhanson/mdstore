@@ -1,0 +1,28 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the three commits adding rename, remove_dir and dir_is_empty.
+
+Verdict LAND, given on f67f2aa. This tip is bf12ff1, the same three
+commits rebased onto 79b6cf9, another session's comment-only change to
+the gate script. git diff between the two tips shows scripts/merge-gate.sh
+and nothing else, so the reviewed source is byte-identical.
+
+Three rounds. Round one returned DO-NOT-LAND: the escape assertions
+passed on ENOTEMPTY rather than on the refusal, so replacing both
+methods with ambient std::fs left the whole suite green. Round two
+returned DO-NOT-LAND: the rename rustdoc claimed by round one's commit
+was never written, because the edit script asserted on a later match,
+threw and wrote nothing.
+
+Round three verified by execution. Ten mutations, each caught by a
+named test: ambient fallbacks for read, remove_dir and dir_is_empty; a
+rename that refuses an existing destination; a rename that refuses a
+directory source; a rename rewritten as read-then-write; and a
+half-guard that checks for a parent component and then goes ambient.
+Confinement proved against climbing, absolute, symlink and
+symlinked-parent paths for all three methods.
+
+197 tests with --all-features, clippy clean, fmt clean.
+
+Two follow-ups, neither blocking, both recorded: the three methods are
+absent from the existing symlink tests, which leaves one contrived
+mutation alive, and the rename rationale omits the cap-std premise that
+makes its argument hold.
