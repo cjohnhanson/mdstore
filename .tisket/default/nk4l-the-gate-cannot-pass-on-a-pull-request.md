@@ -39,3 +39,22 @@ Option 1 matches the model: a note records that a reviewer read a change, and a 
 All six repositories. Every one requires `gate` and every gate workflow had the same push-only trigger.
 
 CONTRIBUTING.md states the limitation and tells a contributor to open the pull request anyway.
+
+## Scratch Notes
+
+## Confirmed in production 2026-08-17
+
+PR #16 proves it. Two runs on the same tip:
+
+- push event: **pass**, 30s. Checked out 5ea220e, which carries a review note.
+- pull_request event: **fail**, 33s.
+
+The failure line:
+
+    merge-gate: no fresh-eyes review note on 57cf6136d4585fdb4067fedb10e65182a994e61f (pushing to refs/heads/detached)
+
+57cf6136 is not a commit on the branch. It is the merge commit GitHub creates for the pull request. The synthesized ref is refs/heads/detached, which gaff builds for a detached HEAD, so the refs/notes/* exemption does not fire.
+
+Pushing refs/notes/reviews to the remote does not help. The note exists on 5ea220e. No note can exist on a merge commit GitHub creates after the fact.
+
+So the reasoning from gaff src/cli.rs run_ci holds, and observation matches it.
