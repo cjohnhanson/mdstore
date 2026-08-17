@@ -388,3 +388,24 @@ edit per script, verified by grep on the file.
 The peer session attributed missouri commits to me a second time; the
 reflog shows every entry is theirs, including the branch rename that
 put them there. Sent it.
+## 2026-08-17 00:20 — landing in sequence under load
+
+mdstore e57ff8d landed: a store error carries the io kind, Error is
+non_exhaustive, refused_by_confinement and io_kind exposed. Reviewer
+verified the cap-std errno claim from source across every backend and
+found the fail-safe direction runs loud.
+
+Ready to push, in order, one at a time because load average is 130
+and each gate takes ten minutes:
+
+1. zettel fix/lazy-note-handle, LAND, pushing now through its gate.
+2. tisket fix/load-project-and-closed, LAND, pinned to e57ff8d, note
+   written, waiting for zettel to clear.
+3. almanac fix/no-hang-on-a-pipe, LAND, note not yet written.
+4. mdstore chore/gate-requires-mutation-verified, unreviewed.
+
+Every fix this round was written test-first and each was verified by
+putting the bug back. Reviewers found the process failures too: I
+switched a worktree branch under a reviewer's build, and I wrote a
+copy_tree assertion whose destination sat inside the source so it
+passed on the recursion error. Both caught, both fixed.
