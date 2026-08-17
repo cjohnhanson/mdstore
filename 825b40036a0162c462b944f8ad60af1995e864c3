@@ -1,0 +1,11 @@
+fresh-eyes: two adversarial review rounds, eight independent agents, on CONTRIBUTING/AGENTS/SECURITY and the gate config.
+
+Round one: five lenses (gold-standard exemplars, ASD-STE100 line-by-line, factual accuracy against source, AI-writing patterns, three-persona walkthrough). Verdict three rewrite, two needs-edit. Twelve substantive defects, most of them repository behaviour asserted from CLI help text instead of read from source.
+
+Round two, on the rewrite: verified ten of twelve defects fixed, found three the rewrite introduced, and established from gaff src/cli.rs run_ci that the pull_request trigger cannot turn the gate green. Filed as nk4l, then confirmed in production by PR #16: push event passed in 30s, pull_request event failed in 33s on the merge commit GitHub creates.
+
+Voice gap from round two closed mechanically after its lens agent died: zero first-person pronouns, zero em dashes, zero semicolons, two over-length sentences found and split.
+
+Mutation: not applicable. The change adds no guard, no branch, and no test. It is documentation, a workflow trigger, package metadata, and one tisket issue. merge-gate.sh states that a note reading no mutation passes, so this records the reason rather than the word.
+
+What replaced mutation testing here: eight behavioural assertions in the rewritten documents were each checked against the gate scripts, the generated workflow, src/, and the GitHub API. One failed that check. CONTRIBUTING.md now states the limit rather than promising a green check, and nk4l tracks the fix.
