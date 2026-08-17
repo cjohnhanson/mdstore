@@ -77,3 +77,54 @@ The consumer commits cannot be made yet. Each repo's commit gate runs clippy, an
 Note on the working trees: ~/Projects/mdstore moved from refactor/split-review-check to gate/split-review-check mid-session, which broke one build that pointed at it. Builds now point at the ~/Projects/.wt/mdstore-per-tool worktree, which is stable.
 
 Next, in order: land mdstore, then bump each pin to the merged commit, then commit each consumer, then write the three per-tool config files and delete ~/.config/mdstore/config.yml.
+## Consolidated onto the existing branch (2026-08-17)
+
+A branch already carried this work: per-tool-config, commit 31d50ed, dated 11:39 today, in the worktree ~/Projects/.wt/mdstore-wf. It was found only after a second branch had been written. The two agree on design, and their resolve.rs changes are byte-identical.
+
+per-tool-config is the branch that continues. fix/per-tool-user-config (4082571) is abandoned; its unique pieces landed on top as e77ea6c: registry_path and Registry::load take the tool name, and the README user layer section is rewritten. The two issue commits were cherry-picked as ce0190d and 8e3d1e4.
+
+One test difference kept, and earned by mutation: the pre-existing test asserts two tools differ and checks the tisket and zettel suffixes. It omits almanac. A mutation special-casing almanac back to the library directory passes every original assertion. The added loop over all three tools catches it, and the message names the tool.
+
+mdstore has no missouri suite, so the merge gate runs cargo test only there. 202 tests pass with --all-features.
+
+Consumer patches in the scratchpad target the same API and stay valid. Their pins still cannot move until this lands and 6wsp is resolved.
+## Fresh-eyes round one: FIX FIRST (2026-08-17)
+
+Three of five mutations were not caught. The reviewer was right on every count.
+
+Not caught, and now fixed: registry_path discarding its tool argument, and both resolve.rs error strings reverting to the library path. The error strings are the whole user-visible point of this change, and nothing tested them. every_terminal_error_names_the_fix now asserts the tool's path is present and the library's is absent, on both error branches. registry.rs gained each_tool_owns_its_own_registry_path. Both were verified by re-applying the mutation.
+
+Not caught, and not fixed: UserConfig::load and save_root each discarding the tool argument. A unit test cannot observe the derived path without writing under the real passwd home. Filed as sv4p.
+
+The README had become false rather than merely silent: it claimed the registry follows the passwd-home rule while registry_path reads three repo-settable environment channels. The section now states the registry's real resolution. The rule itself is filed as zfip, and it is not a one-line fix, because every consumer's missouri fixtures set MDSTORE_REGISTRY.
+
+registry_path used join(tool) where config_path used format!. join drops the base on an absolute component, so two public functions disagreed on what one tool value could reach. Both use format! now.
+
+A comment claiming the suffix assertions miss a prefix mutation was wrong, and the mutation proved it: the ends_with assertion caught it first. The comment now states what the loop actually covers, which is a third tool the suffix checks omit.
+
+Version is 0.4.0. Four public signatures changed, and repo precedent bumps for that.
+
+203 tests pass with --all-features, clippy clean with --all-features, fmt clean. Round two is running against e1ccd7f.
+## Fresh-eyes round two: FIX FIRST, and one blocker was my own bad fix (2026-08-17)
+
+The round-one fix to registry_path was false. A leading {tool} in a format string is absolute for an absolute input, so join still dropped the base, and format!("/registry.yml") moved the empty-name case to the filesystem root, which the original code did not do. The comment asserted the containment property the code lacked. That is the round-one README defect repeated in a code comment, in the same change that was fixing it. Reverted to base.join(tool).join("registry.yml"), with a comment stating the escape plainly and pointing at sv4p.
+
+The new registry test was vacuous under MDSTORE_REGISTRY. It returned early before asserting, so the suite reported 203 passed with the guarded bug live. Under that variable it now asserts the documented behavior: both tools resolve to exactly the forced path. It also missed prefix reintroduction, because ends_with matches trailing components and the env-dependent base gives nothing to anchor against. It now tests the whole string.
+
+The sv4p claim that a unit test cannot observe the read and write paths was wrong, and the reviewer proved it by building the seam. config_path_in, load_in and save_root_in take the home as a parameter; public wrappers delegate through passwd_home. No public signature changed. The test plants a decoy under a temp home's .config/mdstore/ and the real file under .config/tisket/, then asserts the read takes the real file, the write returns a path in .config/zettel/, and the decoy keeps its bytes. Both mutations that round one missed now fail by name. sv4p keeps only its validation half.
+
+Recorded because it repeated: two of three round-two blockers were prose asserting a property the code did not have. A comment is not a lower standard than a README.
+
+204 tests, clippy and fmt clean with --all-features. Tip 2d64d65. Round three running.
+
+## Release coordination (2026-08-17)
+
+Another session is driving the six tools to release, and its decisions change the consumer half.
+
+mdstore publishes to crates.io as package mdstore-core. 0.3.6 goes first as a baseline that claims the name and proves the pipeline, and this branch's 0.4.0 follows as an ordinary second release. The 0.4.0 bump stays.
+
+Consumers already moved from a git rev to a crates.io dependency, so the planned step of bumping each pin to the merged mdstore commit no longer exists. Each consumer moves version 0.3 to 0.4 in the same change that adopts the tool argument. Until 0.4.0 publishes they build through a gitignored [patch.crates-io] mdstore-core path override, which stays in place. The three saved consumer patches are therefore stale in their manifest hunks and correct in their source hunks.
+
+6wsp handed to that session, with the reproduction and the bisect range. It needs the answer before tagging, because the suspect commit is already inside 0.3.6 and the release workflow does not run missouri.
+
+sv4p to be fixed on this branch before the pull request opens, because publication is what widens the caller set from three compile-time constants to anyone. It is not a traversal in any shipped binary today, and the issue should not claim it is. One open design point: rejecting a malformed name needs its own error, because None already means the home did not resolve, and reusing it makes the consumer's message lie.

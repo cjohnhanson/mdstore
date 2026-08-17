@@ -293,11 +293,21 @@ mod tests {
         let store = home.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let written = UserConfig::save_root_in(Some(&home), "zettel", &store).unwrap();
-        assert!(
-            written.ends_with(".config/zettel/config.yml"),
-            "{}",
-            written.display()
+        // Equality against the home that was handed in, not a suffix. A
+        // suffix holds for any home at all, so an inner function that
+        // reaches for passwd_home() instead of its parameter passes the
+        // test while writing into the real user's config directory.
+        assert_eq!(
+            written,
+            home.join(".config").join("zettel").join("config.yml"),
+            "the write ignored the home it was given"
         );
+        // An unresolvable home is the default and never an error. The
+        // doc comment on `load` has always said so, and this seam is the
+        // only way to assert it.
+        let cfg = UserConfig::load_in(None, "tisket").unwrap();
+        assert_eq!(cfg.root_store, None);
+
         let after = std::fs::read_to_string(decoy.join("config.yml")).unwrap();
         assert_eq!(after, "root_store: /decoy\n", "the write hit the decoy");
     }
