@@ -900,7 +900,16 @@ mod tests {
     }
 
     fn init(dir: &Path) -> gix::Repository {
-        gix::init(dir).unwrap()
+        // The fixture edits references, and a reflog write needs a
+        // committer. The identity lives in the repo's own config, so
+        // the tests do not depend on the machine's global gitconfig.
+        // A host with no global config (a CI runner) fails without it.
+        let repo = gix::init(dir).unwrap();
+        let config = repo.git_dir().join("config");
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = t\n\temail = t@e\n");
+        std::fs::write(&config, text).unwrap();
+        gix::open(dir).unwrap()
     }
 
     #[test]
