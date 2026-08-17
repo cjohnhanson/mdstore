@@ -1,13 +1,13 @@
 ---
 title: a bare local path with @ canonicalizes as scp form and merges slots
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
 labels: []
 depends_on: []
 created: 2026-08-16T21:02:18Z
-updated: 2026-08-16T21:02:18Z
+updated: 2026-08-17T18:16:08Z
 ---
 
 ## Problem
@@ -32,3 +32,5 @@ mutant of it survived the suite, and an @ in the first path segment
 still collapsed: up@2 and down@2 both keyed 2. scp form now also
 requires the colon git itself requires. Recorded because the issue's
 stated fix was the slash test alone, and it was insufficient.
+Closed at mdstore a0a8c51, landed through the check-gated path with a
+review note naming every mutation two independent reviewers killed.

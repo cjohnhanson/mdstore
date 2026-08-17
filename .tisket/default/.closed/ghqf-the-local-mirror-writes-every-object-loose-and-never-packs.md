@@ -1,13 +1,13 @@
 ---
 title: the local mirror writes every object loose and never packs
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
 labels: []
 depends_on: []
 created: 2026-08-16T21:02:18Z
-updated: 2026-08-16T21:02:18Z
+updated: 2026-08-17T18:16:08Z
 ---
 
 ## Problem
@@ -43,3 +43,5 @@ be visible to whoever reads this next.
 
 Both halves are pinned by tests written before the fix, and each
 guard dies under its own mutation.
+Closed at mdstore a0a8c51, landed through the check-gated path with a
+review note naming every mutation two independent reviewers killed.
