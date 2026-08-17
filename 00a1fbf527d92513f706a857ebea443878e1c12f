@@ -1,0 +1,6 @@
+fresh-eyes: not applicable, and said so rather than faked.
+
+One commit touching only .tisket/: three issues close and record where
+their fix landed. No source, no test, no guard, so no mutation to
+apply. The gate's header names this claim-check limit; this is its
+honest case.
