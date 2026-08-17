@@ -155,3 +155,24 @@ A merge order binds six repos. gaff reaches main first, because scripts/merge-ga
 An absent reviews: key refuses every push, which is correct, but the message does not tell a reader what to write. Filed on the release side rather than fixed here.
 
 Tip db5151a. 207 tests, 1 ignored for the network, 1 integration test, 2 doc-tests, clippy and fmt clean under the profile gaff. Round five running for a clean verdict, because a sign-off written on a FIX FIRST verdict is worth nothing.
+## The branch was cut from a stale main (2026-08-17)
+
+The pull request opened CONFLICTING. per-tool-config was created from a main that had since moved 17 commits, so five review rounds had run against a stale base. Nothing in the review could have caught that; the branch's footing was never checked.
+
+Merged origin/main rather than rebasing. This repo squash-merges, so branch shape does not survive, and one conflict resolution beats replaying twelve commits through the same two files. Only the manifests conflicted. Cargo.toml resolved to 0.4.0 over main's 0.3.6, which is the sequence the release session specified and the smallest number that makes five broken signatures visible to Cargo's resolver, since the minor position is the compatibility boundary below 1.0. Cargo.lock taken from main and refreshed. src/store.rs and README.md auto-merged.
+
+A verification pass confirmed the merge rather than assuming it. The old is_plain_stem body on origin/main is byte-identical to the body this change replaces, so the equivalence proof transfers. No incoming commit touches confined.rs, userconfig.rs, registry.rs, resolve.rs or tool.rs. Main's colon work is git URL scp-form canonicalization, unrelated to tool-name validation. Three mutations re-fired on the merged tree and all three bit, including the loop bound in store.rs, which is the one file the auto-merge combined and therefore the one place a guard could have been diluted silently.
+
+## The pull request
+
+Draft, mdstore#17, tip 0045941. mergeable MERGEABLE, mergeStateStatus BLOCKED on the required gate check.
+
+The pull request body went through the same standards as any other prose, per the corrected rule in co.d. That review found four blockers, and two of them were in the code rather than the body:
+- resolve.rs claimed one type makes a mismatched tool name a compile error. False. Vocabulary.tool unifies the type, not the value.
+- tool.rs credited confined::StoreDir with containment the operating system enforces. Overstated on macOS: cap-primitives uses RESOLVE_BENEATH on Linux and FreeBSD only, and every other target resolves in userspace. The same claim in confined.rs predates this branch and is filed as i822.
+
+That was the fifth instance of one failure mode in this change: prose asserting a containment property the code does not have. Four instances were in code comments, one in a README, one in a pull request body. The pattern is not carelessness about comments; it is writing the justification before measuring the thing.
+
+Test counts on the merged tree, corrected by the reviewer: 216 unit, 8 integration across two binaries (merge_gate_guard 7 from main, single_binary 1 pre-existing), 2 doc-tests, 1 ignored for the network.
+
+Still owed: the assertion name and mutation verdict for 6wsp, from the release session, to close it here.
