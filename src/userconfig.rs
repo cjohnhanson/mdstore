@@ -231,8 +231,9 @@ mod tests {
         assert!(a.ends_with(".config/tisket/config.yml"), "{}", a.display());
         assert!(b.ends_with(".config/zettel/config.yml"), "{}", b.display());
 
-        // No tool reaches this library's directory. The suffix checks
-        // above still pass if a prefix reintroduces it.
+        // The suffix checks cover tisket and zettel only. A body that
+        // special-cases a third tool back to this library's directory
+        // passes every assertion above.
         let library = passwd_home().unwrap().join(".config").join("mdstore");
         for tool in ["tisket", "zettel", "almanac"] {
             let p = config_path(tool).unwrap();

@@ -270,6 +270,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("store root <path>"), "{err}");
+        // The path must name the calling tool's directory. This message
+        // is the only place a user learns which file to edit, so a
+        // regression to the library's directory sends them to a file
+        // nothing reads.
+        assert!(err.contains("~/.config/tool/config.yml"), "{err}");
+        assert!(!err.contains("config/mdstore"), "{err}");
         let err = resolve_root(&d, None, true, Intent::Read, &cfg(None), V)
             .unwrap_err()
             .to_string();
@@ -282,5 +288,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has no tool.yml"), "{err}");
+        assert!(err.contains("~/.config/tool/config.yml"), "{err}");
+        assert!(!err.contains("config/mdstore"), "{err}");
     }
 }

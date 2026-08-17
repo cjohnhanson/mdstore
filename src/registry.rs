@@ -31,7 +31,10 @@ pub fn registry_path(tool: &str) -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    base.join(tool).join("registry.yml")
+    // `format!`, matching config_path, and not `join(tool)`. `join`
+    // drops the base when the component is absolute, so the two public
+    // functions would disagree on what one `tool` value can reach.
+    base.join(format!("{tool}/registry.yml"))
 }
 
 /// One override: a declared source, and where it lives on this machine.
@@ -157,6 +160,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn each_tool_owns_its_own_registry_path() {
+        // No environment is set or read here beyond what registry_path
+        // already reads: two names through one call must differ, and
+        // each must end in its own directory. A tool argument that the
+        // body ignores collapses both, whatever the base resolves to.
+        let a = registry_path("tisket");
+        let b = registry_path("zettel");
+        if std::env::var_os("MDSTORE_REGISTRY").is_some() {
+            // The env override answers for every tool by design.
+            return;
+        }
+        assert_ne!(a, b, "two tools must never share a registry file");
+        assert!(a.ends_with("tisket/registry.yml"), "{}", a.display());
+        assert!(b.ends_with("zettel/registry.yml"), "{}", b.display());
+        for tool in ["tisket", "zettel", "almanac"] {
+            let p = registry_path(tool);
+            assert!(
+                !p.ends_with("mdstore/registry.yml"),
+                "{tool} reads the library's directory: {}",
+                p.display()
+            );
+        }
     }
 
     #[test]

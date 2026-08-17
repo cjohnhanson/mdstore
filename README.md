@@ -113,13 +113,19 @@ Each consumer owns its file, named by the tool the user runs. A user
 configures tisket, zettel, or almanac, and never this library, so this
 library's name stays out of the config directory. Parsing, the format
 gate, and the atomic write live here, and the caller supplies its name.
-The registry follows the same rule.
 
-The path shape is fixed and the home directory comes from the passwd
-database, never `$HOME` or `XDG_CONFIG_HOME`: every environment channel
-is repo-settable (direnv, mise), and this file names where a write can
-land. Consumers expose the resolution as one rule through
-`mdstore::resolve` and set the file with their `store root` subcommand.
+For `config.yml` the path shape is fixed and the home directory comes
+from the passwd database, never `$HOME` or `XDG_CONFIG_HOME`: every
+environment channel is repo-settable (direnv, mise), and this file names
+where a write can land. Consumers expose the resolution as one rule
+through `mdstore::resolve` and set the file with their `store root`
+subcommand.
+
+`registry.yml` sits in the same per-tool directory, and its resolution
+is weaker: `MDSTORE_REGISTRY` names it outright, and `XDG_CONFIG_HOME`
+or `$HOME` supply the base. A repo can therefore set which registry
+answers, and the registry decides which content a declared URL
+resolves to. Tightening that to the rule above is open work.
 
 ## Sources
 
