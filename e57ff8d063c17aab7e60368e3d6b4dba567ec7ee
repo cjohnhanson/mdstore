@@ -1,0 +1,39 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of the two commits carrying the io error kind through StoreDir failures.
+
+Verdict LAND on this tip, e57ff8d.
+
+Two rounds. Round one returned DO-NOT-LAND on two items: a doc block
+that had landed on the wrong method, and a new variant added to an
+exhaustive public enum under a patch bump. Both fixed; the enum is
+non_exhaustive and the changelog states the compile consequence.
+
+The reviewer verified the cap-std claim from source, not observation.
+Every escape refusal goes through one constructor in cap-primitives,
+io::Error::new(PermissionDenied, ...) with no errno, on the Linux
+openat2 path, the FreeBSD path and the manual resolver macOS uses.
+Every other error the resolver synthesizes is built from a rustix
+Errno and carries one. Only two other errno-less PermissionDenied
+sites exist on unix, reopen and networking, and neither is reachable
+from any operation StoreDir performs. The discriminator does not
+misclassify on 4.0.2.
+
+Fail-safe direction: if a future cap-std attached an errno to its
+refusal, a refusal reads as a fault and the consumer errors loudly. A
+fault cannot start reading as a refusal without an errno-less
+PermissionDenied from a reachable path, and none exists.
+
+Mutations, each killed by a named test: rebuild the source from the
+kind alone, losing the errno, killed at the mode-000 assertion of
+a_refusal_and_a_permissions_failure_carry_different_kinds; drop the
+kind half of refused_by_confinement, killed by the same test's
+errno-less-Other assertion, added fail-first this round; a probe
+matching every variant without a wildcard, does not compile.
+
+Kind round-trip is preserved by construction on macOS and Linux:
+from_raw_os_error and the original decode share one function.
+
+198 tests with --all-features, clippy clean, fmt clean.
+
+Follow-ups, neither blocking: io_error rebuilds an error every call
+site already owns and could pass through; the permissions test is
+root-hostile and leaks its fixture on failure.
