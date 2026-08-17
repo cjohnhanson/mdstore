@@ -235,9 +235,13 @@ impl StoreDir {
     /// # This destroys an existing destination
     ///
     /// An entry already at `to` is replaced, and what it held is gone.
-    /// No error is raised. This matches `renameat`, and refusing would
-    /// mean testing the name first, which is a check that can go stale
-    /// between the test and the move. A handle exists so that there is
+    /// No error is raised.
+    ///
+    /// The operating system can refuse atomically: Linux has
+    /// `renameat2(RENAME_NOREPLACE)` and macOS has
+    /// `renameatx_np(RENAME_EXCL)`. cap-std exposes neither, so a
+    /// refusal here could only test the name first, and that check can
+    /// go stale between the test and the move. A handle exists so that there is
     /// no such check to get wrong, so the primitive is not wrapped in
     /// one here.
     ///
@@ -522,7 +526,29 @@ mod tests {
 
         assert!(f.store.subdirectories("").iter().all(|n| n != "linked"));
         assert!(f.store.read("linked/secret.md").is_err());
+
+        // Every method that takes a name, not only the readers. A
+        // guard written on a parent component and a leading slash
+        // answers all of these wrong, because a link carries neither.
+        assert!(f.store.rename("docs/note.md", "linked/stolen.md").is_err());
+        assert!(f.store.rename("linked/secret.md", "docs/taken.md").is_err());
+        assert!(!f.store.is_document("linked/secret.md"));
+        assert!(f.store.remove("linked/secret.md").is_err());
+        assert!(f.store.scan("linked").is_err());
+
+        // An empty directory through the link, so the refusal cannot
+        // be mistaken for ENOTEMPTY.
+        std::fs::create_dir_all(f.base.join("outside/hollow")).unwrap();
+        assert!(!f.store.dir_is_empty("linked/hollow"));
+        assert!(f.store.remove_dir("linked/hollow").is_err());
+        assert!(
+            f.base.join("outside/hollow").is_dir(),
+            "a directory outside the store was removed through a link"
+        );
+
         assert!(f.outside_is_intact());
+        assert!(!f.store.is_document("docs/taken.md"));
+        assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
     }
 
     #[test]
