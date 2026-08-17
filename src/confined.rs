@@ -32,13 +32,28 @@ use crate::store::{Scan, ScanEntry};
 
 /// One store's directory, and the authority to read and write inside
 /// it.
-#[derive(Debug)]
+///
+/// A clone shares the open directory rather than opening the root
+/// again. Re-opening per operation would resolve the root through
+/// ambient authority every time, so a root swapped between two calls
+/// would be followed. Sharing one handle is also what makes a scan of
+/// 500 documents one root open rather than 501.
+#[derive(Debug, Clone)]
 pub struct StoreDir {
     /// Where the store is, for a message or an identity. Never used to
     /// build a path for an operation.
     root: PathBuf,
-    dir: Dir,
+    dir: std::sync::Arc<Dir>,
 }
+
+/// Two handles are the same store when they name the same root.
+impl PartialEq for StoreDir {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+    }
+}
+
+impl Eq for StoreDir {}
 
 impl StoreDir {
     /// Open a store root.
@@ -53,7 +68,7 @@ impl StoreDir {
         })?;
         Ok(StoreDir {
             root: root.to_path_buf(),
-            dir,
+            dir: std::sync::Arc::new(dir),
         })
     }
 
@@ -112,13 +127,48 @@ impl StoreDir {
 
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp = parent.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
-        let temp = temp.to_string_lossy().into_owned();
+        self.write_staged(rel, contents, parent, name, unique)
+    }
+
+    /// The staging name one write uses.
+    ///
+    /// The counter is a parameter so a test can plant a file at the
+    /// exact name a write will take. A test that plants a guess
+    /// against a process-global counter asserts nothing: every earlier
+    /// write in the process has already moved it past the guess.
+    fn stage_name(parent: &Path, name: &str, unique: u64) -> String {
+        parent
+            .join(format!(".{name}.{}.{unique}.tmp", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn write_staged(
+        &self,
+        rel: &str,
+        contents: &str,
+        parent: &Path,
+        name: &str,
+        unique: u64,
+    ) -> Result<()> {
+        use std::io::Write as _;
+
+        let temp = Self::stage_name(parent, name, unique);
+
+        // The exclusive create is the point where this call takes
+        // ownership of the staging name. Before it succeeds the file
+        // belongs to whoever else is mid-write there, and the error
+        // path must not remove it. Removing it destroyed that writer's
+        // staged content.
+        let mut file = match self
+            .dir
+            .open_with(&temp, OpenOptions::new().write(true).create_new(true))
+        {
+            Ok(file) => file,
+            Err(e) => return Err(self.io_error(&temp, &e)),
+        };
 
         let staged = (|| -> std::io::Result<()> {
-            let mut file = self
-                .dir
-                .open_with(&temp, OpenOptions::new().write(true).create_new(true))?;
             file.write_all(contents.as_bytes())?;
             file.sync_all()
         })();
@@ -132,6 +182,20 @@ impl StoreDir {
             return Err(self.io_error(rel, &e));
         }
         Ok(())
+    }
+
+    /// True when the name exists inside the store but is not a
+    /// regular file.
+    ///
+    /// A scan skips a link by type, so this is what tells a caller
+    /// that something was there and was refused. A name that leaves
+    /// the store is not present, so this answers false rather than
+    /// reaching out to follow it.
+    #[must_use]
+    pub fn present_but_irregular(&self, rel: &str) -> bool {
+        self.dir
+            .symlink_metadata(rel)
+            .is_ok_and(|m| !m.file_type().is_file())
     }
 
     /// Remove one document.
@@ -150,8 +214,9 @@ impl StoreDir {
 
     /// The subdirectory names under one directory of the store.
     ///
-    /// A link is skipped by dirent type. Names starting with a dot are
-    /// omitted. The result is sorted.
+    /// A link is skipped because the dirent type of a link is a link,
+    /// not a directory, and this never follows it. Names starting with
+    /// a dot are omitted. The result is sorted.
     #[must_use]
     pub fn subdirectories(&self, rel: &str) -> Vec<String> {
         let Ok(entries) = self.dir.read_dir(rel) else {
@@ -159,7 +224,7 @@ impl StoreDir {
         };
         let mut names: Vec<String> = entries
             .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .filter_map(|e| e.file_name().to_str().map(ToString::to_string))
             .filter(|n| !n.starts_with('.'))
             .collect();
@@ -378,16 +443,24 @@ mod tests {
         // flags it carries. Proven by the sibling test below, which
         // shows a plain create fails the same way.
         let f = Fixture::new("staging");
-        // Every staging name this process could pick, planted first.
-        for n in 0..16 {
-            let link = f.base.join(format!(
-                "store/docs/.note.md.{}.{n}.tmp",
-                std::process::id()
-            ));
-            let _ = std::os::unix::fs::symlink(f.base.join("outside/secret.md"), &link);
-        }
+        // The exact staging name the write will take. Guessing at a
+        // process-global counter proves nothing, because every earlier
+        // write in the process has already moved it.
+        let planted = StoreDir::stage_name(Path::new("docs"), "note.md", 7);
+        std::os::unix::fs::symlink(
+            f.base.join("outside/secret.md"),
+            f.base.join("store").join(&planted),
+        )
+        .unwrap();
 
-        let _ = f.store.write("docs/note.md", "new content");
+        let result = f.store.write_staged(
+            "docs/note.md",
+            "new content",
+            Path::new("docs"),
+            "note.md",
+            7,
+        );
+        assert!(result.is_err(), "a write onto a planted link must fail");
 
         assert!(f.outside_is_intact(), "the victim file was written");
         let meta = std::fs::symlink_metadata(f.base.join("store/docs/note.md")).unwrap();
@@ -419,22 +492,29 @@ mod tests {
         // writers inside one store never share a staging file, so
         // neither truncates the other's half-written document.
         let f = Fixture::new("exclusive");
-        let name = format!(".taken.md.{}.0.tmp", std::process::id());
         f.store.write("docs/taken.md", "first").unwrap();
-        std::fs::write(f.base.join("store/docs").join(&name), "in progress").unwrap();
+        // Plant at the name the second write will take, then drive the
+        // real write. Calling the raw open instead of `write` is why
+        // this test missed that the error path deleted the file.
+        let planted = StoreDir::stage_name(Path::new("docs"), "taken.md", 3);
+        std::fs::write(f.base.join("store").join(&planted), "in progress").unwrap();
 
-        let again = f.store.dir.open_with(
-            format!("docs/{name}"),
-            OpenOptions::new().write(true).create_new(true),
-        );
+        let again =
+            f.store
+                .write_staged("docs/taken.md", "second", Path::new("docs"), "taken.md", 3);
         assert!(
             again.is_err(),
             "an exclusive create must refuse a taken name"
         );
         assert_eq!(
-            std::fs::read_to_string(f.base.join("store/docs").join(&name)).unwrap(),
+            std::fs::read_to_string(f.base.join("store").join(&planted)).unwrap(),
             "in progress",
-            "the other writer's staging file was truncated"
+            "the other writer's staging file was destroyed"
+        );
+        assert_eq!(
+            f.store.read("docs/taken.md").unwrap(),
+            "first",
+            "the document changed despite the failed write"
         );
     }
 
