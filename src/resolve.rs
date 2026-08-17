@@ -117,7 +117,7 @@ pub fn resolve_root(
         ))),
         (_, None) => Err(Error::InvalidStore(format!(
             "not a {tool} {noun}: no {marker} at or above {}, and no root {noun} is set in \
-             ~/.config/mdstore/config.yml (set one: {tool} store root <path>)",
+             ~/.config/{tool}/config.yml (set one: {tool} store root <path>)",
             cwd.display()
         ))),
     }
@@ -130,7 +130,7 @@ fn require_root_store(root: &Path, vocab: Vocabulary<'_>) -> Result<()> {
     let Vocabulary { marker, noun, tool } = vocab;
     if !has_marker(root, marker) {
         return Err(Error::InvalidStore(format!(
-            "the root {noun} in ~/.config/mdstore/config.yml ({}) has no {marker}; run \
+            "the root {noun} in ~/.config/{tool}/config.yml ({}) has no {marker}; run \
              `{tool} init` there, or set a new path with `{tool} store root <path>`",
             root.display()
         )));

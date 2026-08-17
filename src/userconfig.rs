@@ -1,13 +1,15 @@
-//! The user-level config: `~/.config/mdstore/config.yml`.
+//! The user-level config: `~/.config/<tool>/config.yml`.
 //!
-//! One file, shared by every consumer, so the rule an agent must
-//! predict is identical across tools. The path is fixed: no
-//! `XDG_CONFIG_HOME`, no `MDSTORE_CONFIG`, and no `$HOME` — the home
-//! directory comes from the passwd database. Every environment channel
-//! is repo-settable (direnv, mise, a CI wrapper), and this file names
-//! where a write can land, so it is security config, held to gaff's
-//! standard. Tests substitute the file through an explicit flag on the
-//! consumer CLI, never through the environment.
+//! Each consumer tool owns its own file, named by the tool the user
+//! runs, never by this library — a library is an implementation
+//! detail, and its name does not belong in a user's config directory.
+//! The path shape is fixed: no `XDG_CONFIG_HOME`, no environment
+//! override, and no `$HOME` — the home directory comes from the passwd
+//! database. Every environment channel is repo-settable (direnv, mise,
+//! a CI wrapper), and this file names where a write can land, so it is
+//! security config, held to gaff's standard. Tests substitute the file
+//! through an explicit flag on the consumer CLI, never through the
+//! environment.
 
 use std::path::{Path, PathBuf};
 
@@ -60,18 +62,19 @@ pub fn passwd_home() -> Option<PathBuf> {
     }
 }
 
-/// The fixed path of the user config.
+/// The fixed path of the named tool's user config.
 #[must_use]
-pub fn config_path() -> Option<PathBuf> {
-    passwd_home().map(|h| h.join(".config/mdstore/config.yml"))
+pub fn config_path(tool: &str) -> Option<PathBuf> {
+    passwd_home().map(|h| h.join(format!(".config/{tool}/config.yml")))
 }
 
 impl UserConfig {
-    /// Load the user config from its fixed path. A missing file is the
-    /// default (no fallback); anything else wrong with the file is an
-    /// error, never a silent downgrade to "unconfigured".
-    pub fn load() -> Result<Self> {
-        match config_path() {
+    /// Load the named tool's user config from its fixed path. A
+    /// missing file is the default (no fallback); anything else wrong
+    /// with the file is an error, never a silent downgrade to
+    /// "unconfigured".
+    pub fn load(tool: &str) -> Result<Self> {
+        match config_path(tool) {
             Some(p) => Self::load_from(&p),
             None => Ok(Self::default()),
         }
@@ -122,9 +125,9 @@ impl UserConfig {
         Ok(cfg)
     }
 
-    /// Write `root_store` to the fixed path, atomically.
-    pub fn save_root(root: &Path) -> Result<PathBuf> {
-        let Some(path) = config_path() else {
+    /// Write `root_store` to the named tool's fixed path, atomically.
+    pub fn save_root(tool: &str, root: &Path) -> Result<PathBuf> {
+        let Some(path) = config_path(tool) else {
             return Err(Error::InvalidStore(
                 "no home directory resolves from the passwd database".to_string(),
             ));
@@ -218,6 +221,15 @@ mod tests {
     #[test]
     fn the_default_format_matches_the_serde_default() {
         assert_eq!(UserConfig::default().format, 1);
+    }
+
+    #[test]
+    fn each_tool_owns_its_own_config_path() {
+        let a = config_path("tisket").unwrap();
+        let b = config_path("zettel").unwrap();
+        assert_ne!(a, b, "two tools must never share a config file");
+        assert!(a.ends_with(".config/tisket/config.yml"), "{}", a.display());
+        assert!(b.ends_with(".config/zettel/config.yml"), "{}", b.display());
     }
 
     #[test]
