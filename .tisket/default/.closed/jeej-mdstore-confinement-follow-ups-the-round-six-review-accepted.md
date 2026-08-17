@@ -1,6 +1,6 @@
 ---
 title: 'mdstore: confinement follow-ups the round-six review accepted'
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
@@ -8,7 +8,7 @@ labels:
 - review-followup
 depends_on: []
 created: 2026-08-17T01:44:51Z
-updated: 2026-08-17T01:44:51Z
+updated: 2026-08-17T13:42:17Z
 ---
 
 The round-six fresh-eyes review returned LAND on 97ab454 and accepted
@@ -86,3 +86,11 @@ a_refusal_and_a_permissions_failure_carry_different_kinds pins the
 errno contract directly, on a real escape.
 
 This issue closes when the branch lands.
+Closed at mdstore 2d40ed6. Items 1 and 3: the module doc names hard
+links and in-store directory links as uncovered. Items 3 and 4: one
+climb rule, every operation, twelve guard sites each dying under
+mutation on a named assertion, 13 of 13 on the reviewer's independent
+rerun. Item 2: eight tests gated cfg(unix). Item 5: Scan.skipped
+documents its 0.3.0 break. The larger note: ServeConfig.root carries
+the open-a-StoreDir contract. Smaller note 1: at() has its doc back.
+Smaller note 2 was closed by 0.3.2's errno test.
