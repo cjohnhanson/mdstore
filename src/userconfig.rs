@@ -230,6 +230,18 @@ mod tests {
         assert_ne!(a, b, "two tools must never share a config file");
         assert!(a.ends_with(".config/tisket/config.yml"), "{}", a.display());
         assert!(b.ends_with(".config/zettel/config.yml"), "{}", b.display());
+
+        // No tool reaches this library's directory. The suffix checks
+        // above still pass if a prefix reintroduces it.
+        let library = passwd_home().unwrap().join(".config").join("mdstore");
+        for tool in ["tisket", "zettel", "almanac"] {
+            let p = config_path(tool).unwrap();
+            assert!(
+                !p.starts_with(&library),
+                "{tool} reads the library's directory: {}",
+                p.display()
+            );
+        }
     }
 
     #[test]

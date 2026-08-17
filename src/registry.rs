@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::store::{SourceLocator, StoreContent, StoreSource};
 
-/// The user's registry file.
-pub fn registry_path() -> PathBuf {
+/// The named tool's registry file. A user overriding a URL edits the
+/// directory of the tool they run, for the same reason the user config
+/// does: a library's name does not belong in a config directory.
+pub fn registry_path(tool: &str) -> PathBuf {
     if let Ok(p) = std::env::var("MDSTORE_REGISTRY") {
         return PathBuf::from(p);
     }
@@ -29,7 +31,7 @@ pub fn registry_path() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    base.join("mdstore").join("registry.yml")
+    base.join(tool).join("registry.yml")
 }
 
 /// One override: a declared source, and where it lives on this machine.
@@ -49,9 +51,10 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Load the registry. A missing file is an empty registry.
-    pub fn load() -> Result<Self> {
-        Self::load_from(&registry_path())
+    /// Load the named tool's registry. A missing file is an empty
+    /// registry.
+    pub fn load(tool: &str) -> Result<Self> {
+        Self::load_from(&registry_path(tool))
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
