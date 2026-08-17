@@ -8,9 +8,13 @@
 # Write a note only after an independent reviewer has read the change
 # and its test coverage. A note without a review makes the gate false.
 #
-# The gate has two known limits. The suites test the working tree, not
-# the pushed commit. A fresh clone has no hooks until `gaff init --git`
-# runs; `gaff check` reports that state.
+# The gate has three known limits. The suites test the working tree,
+# not the pushed commit. A fresh clone has no hooks until `gaff init
+# --git` runs; `gaff check` reports that state. And the note checks are
+# claim checks: the gate cannot verify a review happened, or that a
+# mutation was applied. A note reading "mutations: none" passes. What
+# the check changes is what a reviewer writing in good faith thinks to
+# do before writing the note.
 set -e
 
 # git sends the ref list on stdin. The first reader spends the stream.
@@ -58,7 +62,10 @@ printf '%s\n' "$gate_refs" | while read -r _local_ref local_sha remote_ref _remo
   [ "$local_sha" = "$zero" ] && continue
   case "$remote_ref" in refs/notes/*) continue ;; esac
   commit_sha=$(git rev-parse --quiet --verify "$local_sha^{commit}" || echo "$local_sha")
-  note=$(git notes --ref=reviews show "$commit_sha" 2>/dev/null)
+  # `|| true`, or set -e ends the loop's subshell on a missing note
+  # before either message prints, and the person who forgot the note
+  # gets 'failed to push some refs' and nothing else.
+  note=$(git notes --ref=reviews show "$commit_sha" 2>/dev/null || true)
   if ! printf '%s' "$note" | grep -q "fresh-eyes"; then
     echo "merge-gate: no fresh-eyes review note on $commit_sha (pushing to $remote_ref)." >&2
     echo "  A reviewer who did not write the change reads it and its test" >&2
@@ -73,10 +80,12 @@ printf '%s\n' "$gate_refs" | while read -r _local_ref local_sha remote_ref _remo
   # say a mutation was applied describes a reading, not a verification.
   if ! printf '%s' "$note" | grep -qi "mutation"; then
     echo "merge-gate: the review note on $commit_sha does not mention a mutation." >&2
-    echo "  A test for a guard is verified by removing the guard and seeing" >&2
-    echo "  the test go red. Say in the note which mutations were applied" >&2
-    echo "  and which test caught each. A note that only says the change was" >&2
-    echo "  read is not a review of its tests." >&2
+    echo "  A test for a guard (a new if, a new early return, a new type check)" >&2
+    echo "  is verified by removing the guard and seeing the test go red. Say" >&2
+    echo "  in the note which mutations were applied and which test caught" >&2
+    echo "  each. A note that only says the change was read is not a review" >&2
+    echo "  of its tests. Amend the note in place:" >&2
+    echo "    git notes --ref=reviews add -f -m 'fresh-eyes: <reviewer> <scope>. Mutation: <what> -> <test> red' $commit_sha" >&2
     exit 1
   fi
 done
