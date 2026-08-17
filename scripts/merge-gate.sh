@@ -30,6 +30,14 @@ cargo test --workspace --all-features --quiet >/dev/null </dev/null || {
   exit 1
 }
 
+# The CI runner has no nix, but it preinstalls the packages the
+# suites declare. When CI is set, missouri uses the preinstalled
+# backend. A local run keeps the nix backend.
+if [ -n "${CI:-}" ]; then
+  MISSOURI_SANDBOX=preinstalled
+  export MISSOURI_SANDBOX
+fi
+
 if [ -d tests/missouri ]; then
   command -v missouri >/dev/null || {
     echo "merge-gate: missouri is not on PATH and tests/missouri exists." >&2

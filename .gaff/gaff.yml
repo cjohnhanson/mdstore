@@ -16,3 +16,22 @@ git:
     command:
       - sh
       - scripts/merge-gate.sh
+
+# The CI gate: the same declarations, run by gaff ci on every push.
+# Branch protection on main requires this check, so a sha needs a green
+# gate before main accepts it.
+github:
+  - name: gate
+    on:
+      - push
+    steps:
+      - name: fetch review notes
+        command: [sh, -c, "git fetch origin +refs/notes/reviews:refs/notes/reviews || true"]
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: gaff
+        uses: cjohnhanson/gaff@main
