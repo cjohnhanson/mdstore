@@ -16,7 +16,6 @@
   that happened in 0.3.0 beside `ScanEntry.path` and was logged for
   one field and not the other.
 
-
 ## 0.3.2
 
 ### Changed

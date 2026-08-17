@@ -997,6 +997,46 @@ mod tests {
             "create_dir_all followed a climb"
         );
 
+        // The source end of a move, separately: the first version
+        // climbed only the destination, and the source guard survived
+        // its own removal.
+        assert!(
+            f.store
+                .rename("docs/../docs/note.md", "docs/moved.md")
+                .is_err(),
+            "rename followed a climb in its source"
+        );
+        assert!(
+            f.store.is_document("docs/note.md"),
+            "the source moved anyway"
+        );
+
+        // present_but_irregular was never probed at all, and a climb
+        // resolving to a directory flipped it to true with the guard
+        // gone.
+        assert!(
+            !f.store.present_but_irregular("docs/../docs"),
+            "present_but_irregular answered through a climb"
+        );
+
+        // An EMPTY directory beyond the climb, or the OS answer for a
+        // non-empty target masks the missing guard: remove_dir fails
+        // on ENOTEMPTY and dir_is_empty answers false, both for the
+        // wrong reason.
+        f.store.create_dir_all("docs/hollow").unwrap();
+        assert!(
+            !f.store.dir_is_empty("docs/../docs/hollow"),
+            "dir_is_empty answered through a climb to an empty directory"
+        );
+        assert!(
+            f.store.remove_dir("docs/../docs/hollow").is_err(),
+            "remove_dir followed a climb to an empty directory"
+        );
+        assert!(
+            f.store.dir_is_empty("docs/hollow"),
+            "the empty directory went"
+        );
+
         // The document is untouched by all of it.
         assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
     }
