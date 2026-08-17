@@ -621,6 +621,13 @@ fn mirror_local(
 /// behaviour and left this crate's choice of mode unguarded at the
 /// only site that matters.
 ///
+/// Verify rather than AsIs, though AsIs would also catch every fault
+/// this pipeline can produce: the pack is written by FromEntriesIter
+/// in this process microseconds earlier, so a sound-entries-with-a-
+/// wrong-trailer pack — the one shape AsIs accepts and Verify refuses
+/// — cannot arise here. Verify is kept because the reason AsIs is
+/// safe is a property of the caller, not of the mode.
+///
 /// Verify re-reads every entry. Restore truncates at the first fault
 /// and publishes what came before, which lands a slot whose pack
 /// claims more objects than its index holds: every later read fails,
