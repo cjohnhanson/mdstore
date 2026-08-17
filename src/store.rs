@@ -1265,7 +1265,28 @@ pub fn document_dir(root: &Path, configured: &str) -> Result<PathBuf> {
 pub fn sync_source(source: &StoreSource) -> Result<()> {
     match source {
         StoreSource::Path(_) => Ok(()),
-        StoreSource::Git { url, .. } => crate::git::fetch(url),
+        StoreSource::Git { url, rev } => {
+            crate::git::fetch(url)?;
+            // A fetch that moved bytes is not a sync. The declared pin
+            // has to resolve in what arrived, or the report says
+            // synced and the pin fails later, on read, as a
+            // gix-internal message. QA hit exactly that on 2026-08-16.
+            let dir = crate::git::cache_dir(url);
+            match crate::git::resolve_rev(&dir, rev.as_deref()) {
+                Ok(_) => Ok(()),
+                Err(_) => match rev {
+                    Some(pin) => Err(Error::InvalidStore(format!("pin {pin} not found in {url}"))),
+                    // The fetch succeeded and HEAD still does not
+                    // resolve, so nothing was there to mirror: the
+                    // source has no commits. Said plainly, because the
+                    // underlying error names the library ("could not
+                    // peel HEAD"), not the problem.
+                    None => Err(Error::InvalidStore(format!(
+                        "{url}: the source has no commits"
+                    ))),
+                },
+            }
+        }
         StoreSource::Blob { url } => crate::blob::sync(url).map(|_| ()),
     }
 }

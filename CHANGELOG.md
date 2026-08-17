@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+### Fixed
+
+- `sync_source` verifies the declared pin. A fetch that moved bytes
+  reported synced with a rev the source does not hold, and the pin
+  failed later, on read, as a gix-internal message. sync now says
+  `pin <rev> not found in <url>`, and a source with no commits is said
+  plainly instead of surfacing `could not peel HEAD`.
+
 ## 0.3.3
 
 ### Changed

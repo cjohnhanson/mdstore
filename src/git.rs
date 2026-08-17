@@ -995,6 +995,77 @@ mod tests {
         );
     }
 
+    /// sync answers for the pin, not only for the fetch.
+    ///
+    /// fetch never read the declared rev, so a bad pin reported
+    /// synced and surfaced only on read, as a gix-internal message.
+    #[test]
+    fn a_sync_of_a_pin_the_source_does_not_hold_says_so() {
+        let _env = crate::env_lock();
+        let base = scratch("badpin");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        commit_files(&repo, &[("notes/a1.md", "---\ntitle: A\n---\n")], "one");
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let source = crate::store::StoreSource::Git {
+            url: url.clone(),
+            rev: Some("badbadbadbadbadbadbadbadbadbadbadbadbad0".into()),
+        };
+        let err = crate::store::sync_source(&source)
+            .expect_err("a pin the source does not hold reported synced");
+        let msg = err.to_string();
+        assert!(msg.contains("pin"), "the message does not say pin: {msg}");
+        assert!(
+            msg.contains("badbadbad"),
+            "the message does not name the pin: {msg}"
+        );
+        assert!(
+            msg.contains(&url),
+            "the message does not name the source: {msg}"
+        );
+
+        // The good pin, through the same path, still syncs.
+        let good = crate::git::resolve_rev(&crate::git::cache_dir(&url), None).unwrap();
+        let source = crate::store::StoreSource::Git {
+            url,
+            rev: Some(good),
+        };
+        crate::store::sync_source(&source).expect("a held pin failed to sync");
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
+    /// A source with no commits is said plainly.
+    ///
+    /// An unborn HEAD surfaced as a gix delegate.peel_until message,
+    /// which names the library and not the problem.
+    #[test]
+    fn a_sync_of_a_source_with_no_commits_names_that() {
+        let _env = crate::env_lock();
+        let base = scratch("unborn");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let _repo = init(&origin);
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let url = origin.display().to_string();
+        let source = crate::store::StoreSource::Git { url, rev: None };
+        let err = crate::store::sync_source(&source)
+            .expect_err("a source with no commits reported synced");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no commits"),
+            "the message does not say no commits: {msg}"
+        );
+        assert!(
+            !msg.contains("peel"),
+            "a gix internal leaked to the user: {msg}"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
     #[test]
     fn a_real_repository_round_trips_through_the_cache() {
         // Build a repository, mirror it into the cache, read a file from
