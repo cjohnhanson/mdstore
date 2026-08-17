@@ -1218,6 +1218,11 @@ pub struct Scan {
     pub entries: Vec<ScanEntry>,
     /// Paths skipped by a guard, with the reason. Never silent: a
     /// consumer's `check` command reports these.
+    ///
+    /// Relative to the scanned store since 0.3.0, like
+    /// [`ScanEntry::path`]. The old scan pushed the absolute entry
+    /// path, and a consumer printing these saw its output change
+    /// meaning on that release without a changelog line.
     pub skipped: Vec<(PathBuf, String)>,
 }
 

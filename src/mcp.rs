@@ -188,6 +188,13 @@ pub struct ServeConfig {
     /// The store the server reads from. Every command runs from here,
     /// so this root also fixes what the server can reach: the stores
     /// this one declares, and nothing else.
+    ///
+    /// This is a path because a config deserializes; it is not an
+    /// authority. The surface takes document names from a network
+    /// client, so an implementation that reads must open a
+    /// [`crate::confined::StoreDir`] on this root and go through it.
+    /// Joining a client-supplied name onto this path with `std::fs`
+    /// reintroduces what the confined module exists to remove.
     pub root: std::path::PathBuf,
     /// The surfaces to offer.
     pub surfaces: Surfaces,

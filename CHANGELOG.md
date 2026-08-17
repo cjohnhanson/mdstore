@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.3
+
+### Changed
+
+- A store-relative name never contains `..`, and every `StoreDir`
+  operation refuses one, uniformly, before the operating system is
+  asked. The answers disagreed: `read` followed `docs/../docs`, `scan`
+  refused `docs/../absent` and accepted `docs/../docs`, and
+  `dir_is_empty` answered through the climb. A lexical refusal carries
+  the same shape as a cap-std escape, so
+  `Error::refused_by_confinement` covers both. No consumer builds a
+  name with `..`; one that did was relying on unspecified behaviour.
+- `Scan.skipped` documents that its paths are store-relative, a break
+  that happened in 0.3.0 beside `ScanEntry.path` and was logged for
+  one field and not the other.
+
+
 ## 0.3.2
 
 ### Changed

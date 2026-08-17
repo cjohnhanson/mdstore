@@ -21,6 +21,19 @@
 //! database, so no path is built from third-party text and nothing
 //! here applies. The bare clone that backs such a store lives at a
 //! location mdstore chooses, not one a dependency names.
+//!
+//! A hard link is not refused. It has no target to inspect and its
+//! metadata says regular file, so a store shipping one reads the
+//! linked content. git does not carry hard links; tar does, and so
+//! does a hand-copied tree.
+//!
+//! A directory symlink whose target stays inside the store is
+//! followed by read, scan and is_document, because cap-std permits
+//! resolution that never leaves the root. [`StoreDir::subdirectories`]
+//! skips it by dirent type, so such a directory is reachable but not
+//! listed. A consumer that must not follow one checks the type first,
+//! the way almanac refuses a linked references directory and tisket
+//! gates a project name on the listing.
 
 use std::path::{Path, PathBuf};
 
@@ -72,23 +85,45 @@ impl StoreDir {
         })
     }
 
+    /// Refuse a name that carries a parent component, wherever it
+    /// would land.
+    ///
+    /// One rule, applied by every operation: a store-relative name
+    /// never contains '..'. A consumer builds names by joining stems
+    /// forward, so a name with a parent component is never one of
+    /// ours, and refusing it lexically here removes the per-method
+    /// disagreements it caused. read followed docs/../docs, scan
+    /// refused docs/../absent and accepted docs/../docs, and
+    /// dir_is_empty answered through the climb. The handle still
+    /// refuses an actual escape either way; this makes the answer the
+    /// same before the operating system is asked.
+    fn no_climb(&self, rel: &str) -> Result<()> {
+        if Path::new(rel)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            // The same shape cap-std gives an escape: PermissionDenied
+            // with no errno. A consumer keying on
+            // refused_by_confinement then treats a lexical refusal and
+            // an operating-system refusal as one thing, which they are.
+            return Err(Error::StorePath {
+                rel: rel.to_string(),
+                root: self.root.display().to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "a '..' component does not name a store-relative path",
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// The name of the store root itself.
     ///
     /// An empty relative path names the root to every caller, but the
     /// operating system refuses it. Reading it as "." made a scan of
     /// the root return no documents, and the NotFound arm hid that as
     /// an empty store.
-    /// True when the path names a parent at any point.
-    ///
-    /// A climb may still land inside the store, and the handle decides
-    /// that. This only says the question was asked, which is enough to
-    /// tell a missing directory from a refused escape.
-    fn climbs(rel: &str) -> bool {
-        Path::new(rel)
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    }
-
     fn at(rel: &str) -> &str {
         if rel.is_empty() { "." } else { rel }
     }
@@ -105,6 +140,7 @@ impl StoreDir {
     /// regular file is refused by type rather than opened, so a link,
     /// a directory, and a device are all errors.
     pub fn read(&self, rel: &str) -> Result<String> {
+        self.no_climb(rel)?;
         let meta = self
             .dir
             .symlink_metadata(rel)
@@ -125,6 +161,9 @@ impl StoreDir {
     /// True when a regular file sits at this path.
     #[must_use]
     pub fn is_document(&self, rel: &str) -> bool {
+        if self.no_climb(rel).is_err() {
+            return false;
+        }
         self.dir
             .symlink_metadata(rel)
             .is_ok_and(|m| m.is_file() && !m.is_symlink())
@@ -138,6 +177,7 @@ impl StoreDir {
     /// planted, and the rename means a reader sees the old document or
     /// the new one and never a half-written one.
     pub fn write(&self, rel: &str, contents: &str) -> Result<()> {
+        self.no_climb(rel)?;
         let parent = Path::new(rel).parent().unwrap_or(Path::new(""));
         let name = Path::new(rel)
             .file_name()
@@ -212,6 +252,9 @@ impl StoreDir {
     /// reaching out to follow it.
     #[must_use]
     pub fn present_but_irregular(&self, rel: &str) -> bool {
+        if self.no_climb(rel).is_err() {
+            return false;
+        }
         self.dir
             .symlink_metadata(rel)
             .is_ok_and(|m| !m.file_type().is_file())
@@ -219,6 +262,7 @@ impl StoreDir {
 
     /// Remove one document.
     pub fn remove(&self, rel: &str) -> Result<()> {
+        self.no_climb(rel)?;
         self.dir
             .remove_file(rel)
             .map_err(|e| self.io_error(rel, &e))
@@ -254,6 +298,8 @@ impl StoreDir {
     /// A directory moves with everything under it, and replaces an
     /// empty directory at `to`. The name says entry for that reason.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
+        self.no_climb(from)?;
+        self.no_climb(to)?;
         self.dir
             .rename(from, &self.dir, to)
             .map_err(|e| self.io_error(from, &e))
@@ -266,6 +312,7 @@ impl StoreDir {
     /// where that pair disagrees: a store cannot unlink its own root
     /// through its own handle.
     pub fn remove_dir(&self, rel: &str) -> Result<()> {
+        self.no_climb(rel)?;
         self.dir
             .remove_dir(Self::at(rel))
             .map_err(|e| self.io_error(rel, &e))
@@ -281,6 +328,9 @@ impl StoreDir {
     /// both not empty. Neither is a directory this store may remove.
     #[must_use]
     pub fn dir_is_empty(&self, rel: &str) -> bool {
+        if self.no_climb(rel).is_err() {
+            return false;
+        }
         self.dir
             .read_dir(Self::at(rel))
             .is_ok_and(|mut entries| entries.next().is_none())
@@ -288,6 +338,7 @@ impl StoreDir {
 
     /// Create a directory and its parents inside the store.
     pub fn create_dir_all(&self, rel: &str) -> Result<()> {
+        self.no_climb(rel)?;
         self.dir
             .create_dir_all(rel)
             .map_err(|e| self.io_error(rel, &e))
@@ -304,6 +355,9 @@ impl StoreDir {
     /// error; `scan` and `read` refuse the same path outright.
     #[must_use]
     pub fn subdirectories(&self, rel: &str) -> Vec<String> {
+        if self.no_climb(rel).is_err() {
+            return Vec::new();
+        }
         let Ok(entries) = self.dir.read_dir(Self::at(rel)) else {
             return Vec::new();
         };
@@ -323,18 +377,16 @@ impl StoreDir {
     /// consumer's `check` command can name it. A skipped file is never
     /// silent.
     pub fn scan(&self, rel: &str) -> Result<Scan> {
+        self.no_climb(rel)?;
         let mut scan = Scan::default();
         let entries = match self.dir.read_dir(Self::at(rel)) {
             Ok(entries) => entries,
             // A store with no document directory yet holds no
-            // documents. That is not a failure.
-            //
-            // A climbing path is a different thing. When a leading
-            // component is missing, the operating system answers
-            // NotFound before it evaluates the climb, so this arm
-            // turned a refusal into a silent empty result. A path that
-            // tries to leave is refused whether or not it arrives.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !Self::climbs(rel) => {
+            // documents. That is not a failure. A climbing path never
+            // reaches this arm: no_climb refused it at the top, which
+            // is what keeps a missing leading component from hiding a
+            // refusal as an empty store.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(scan);
             }
             Err(e) => return Err(self.io_error(rel, &e)),
@@ -509,6 +561,7 @@ mod tests {
 
     // -- escape through the filesystem --
 
+    #[cfg(unix)]
     #[test]
     fn a_linked_document_is_refused_by_type() {
         let f = Fixture::new("linkdoc");
@@ -532,6 +585,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_linked_directory_is_not_walked() {
         let f = Fixture::new("linkdir");
@@ -564,6 +618,7 @@ mod tests {
         assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_write_cannot_be_captured_by_a_planted_staging_link() {
         // The capability refuses this, not the exclusive create: an
@@ -595,6 +650,7 @@ mod tests {
         assert!(!meta.file_type().is_symlink(), "the document became a link");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_plain_create_through_an_escaping_link_also_fails() {
         // What the handle gives that a flag cannot: the escape is
@@ -646,6 +702,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_fifo_is_not_a_document() {
         let f = Fixture::new("fifo");
@@ -688,6 +745,7 @@ mod tests {
     /// authority every time. Swapping the root between two reads then
     /// redirects the second one. An open handle names the directory
     /// itself, so the swap has nothing to catch.
+    #[cfg(unix)]
     #[test]
     fn a_swapped_root_does_not_redirect_an_open_store() {
         let f = Fixture::new("swap");
@@ -837,6 +895,7 @@ mod tests {
     /// consumer that treated the first as an empty store then treated
     /// a mode-000 directory as empty too, and answered zero documents
     /// with a success status.
+    #[cfg(unix)]
     #[test]
     fn a_refusal_and_a_permissions_failure_carry_different_kinds() {
         let f = Fixture::new("kinds");
@@ -891,6 +950,57 @@ mod tests {
         std::fs::set_permissions(&locked, perms).unwrap();
     }
 
+    /// A parent component is refused everywhere, whether or not the
+    /// path lands back inside.
+    ///
+    /// Before this rule, the answers disagreed: read followed
+    /// docs/../docs/note.md, scan refused docs/../absent but accepted
+    /// docs/../docs, and dir_is_empty answered through the climb. A
+    /// consumer builds store-relative names by joining stems forward;
+    /// a name with '..' in it is never one of ours, so one refusal in
+    /// one place replaces per-method lexical tiebreakers.
+    #[test]
+    fn a_parent_component_is_refused_by_every_operation() {
+        let f = Fixture::new("noclimb");
+        let inside = "docs/../docs/note.md";
+        assert!(f.store.read(inside).is_err(), "read followed a climb");
+        assert!(!f.store.is_document(inside), "is_document followed a climb");
+        assert!(
+            f.store.write(inside, "x").is_err(),
+            "write followed a climb"
+        );
+        assert!(f.store.remove(inside).is_err(), "remove followed a climb");
+        assert!(
+            f.store
+                .rename("docs/note.md", "docs/../docs/moved.md")
+                .is_err(),
+            "rename followed a climb"
+        );
+        assert!(
+            f.store.scan("docs/../docs").is_err(),
+            "scan followed a climb"
+        );
+        assert!(
+            f.store.subdirectories("docs/..").is_empty(),
+            "subdirectories listed through a climb"
+        );
+        assert!(
+            !f.store.dir_is_empty("docs/.."),
+            "dir_is_empty answered through a climb"
+        );
+        assert!(
+            f.store.remove_dir("docs/../docs").is_err(),
+            "remove_dir followed a climb"
+        );
+        assert!(
+            f.store.create_dir_all("docs/../made").is_err(),
+            "create_dir_all followed a climb"
+        );
+
+        // The document is untouched by all of it.
+        assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
+    }
+
     // -- legitimate use --
 
     #[test]
@@ -931,6 +1041,7 @@ mod tests {
         assert_eq!(f.store.subdirectories("docs"), vec!["project".to_string()]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_store_root_behind_a_link_still_opens() {
         // A person may keep a store behind a link and name it. That
