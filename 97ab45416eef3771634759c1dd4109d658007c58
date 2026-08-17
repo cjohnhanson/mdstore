@@ -1,0 +1,25 @@
+fresh-eyes: independent cold reviewer (subagent, no authorship of this branch), full scope of main..97ab454 on an isolated snapshot.
+
+Two rounds. Round one returned DO-NOT-LAND with four blockers: the
+unconfined public document API still shipping, no version bump for two
+breaking changes, a scan that answered empty on a climb through a
+missing directory, and three guards that survived their own removal.
+All four are closed in 685dbee, 8125027 and 97ab454.
+
+Round two verified the fixes by execution on the new tip. 184 tests
+with --all-features, clippy and fmt clean. Five mutations re-run
+independently, each caught by a named test. The gate fix was proved by
+breaking mcp::Served::ensure_writable: cargo test --workspace exits 0
+without --all-features and 101 with it.
+
+The climbs() tiebreaker was attacked with absolute paths, absolute and
+relative symlinks out, a dangling symlink out, and paths through a
+symlinked component. None carries a '..' component and every one is
+refused, because cap-std reports an escape as PermissionDenied whether
+or not the target exists.
+
+Accepted as follow-up, not blocking: a hard link inside the store
+reaching an outside file, ungated unix-only tests in confined.rs, the
+subdirectories/scan disagreement on an internal directory symlink,
+mcp::Served holding a PathBuf, and a missed changelog line for
+Scan.skipped.
