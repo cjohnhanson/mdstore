@@ -3,8 +3,10 @@
 //! Five functions build a path from this name: the user config's path,
 //! its read and its write, the registry's path, and the registry's read.
 //! A `&str` parameter on each puts the validation next to a caller who
-//! must remember it, which is the shape `StoreContent` spent five review
-//! rounds removing. A name that cannot be built wrong cannot reach them.
+//! must remember it. `confined::StoreDir` removed that shape once
+//! already, after four rounds of review each found a different caller
+//! that forgot the predicate. A name that cannot be built wrong cannot
+//! reach these five.
 //!
 //! `new` is `const`, so a consumer rejects a bad literal at compile
 //! time:
@@ -59,11 +61,11 @@ impl<'a> ToolName<'a> {
     ///
     /// A document id passes through `is_plain_stem` and stops there,
     /// which is not an inconsistency. An id is joined through
-    /// `confined::StoreDir`, a capability the operating system enforces,
-    /// so the predicate checks shape and the kernel supplies
-    /// containment. A tool name is joined against the home with a plain
-    /// `Path::join` and no capability beneath it, so the name itself
-    /// carries the whole guarantee.
+    /// `confined::StoreDir`, an open directory handle that confines
+    /// every path beneath the store root, so the predicate checks shape
+    /// and the handle supplies containment. A tool name is joined
+    /// against the home directly, with only a leading literal beneath
+    /// it, so the name itself carries the guarantee.
     #[must_use]
     pub const fn new(name: &'a str) -> Option<Self> {
         if !crate::store::is_plain_stem(name) {

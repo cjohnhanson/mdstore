@@ -50,9 +50,13 @@ pub struct Resolved {
 pub struct Vocabulary<'a> {
     pub marker: &'a str,
     pub noun: &'a str,
-    /// The same type the config path takes. Two independent strings let
-    /// a consumer print an error naming a file it never reads, and no
-    /// test noticed; one type makes that a compile error.
+    /// The same type the config path takes.
+    ///
+    /// This unifies the type, not the value. A consumer can still build
+    /// a vocabulary with one name and load its config with another, and
+    /// nothing here catches that. What changed is the message: it names
+    /// the file the config path builds, where it once named
+    /// `~/.config/mdstore/config.yml` no matter which tool ran.
     pub tool: crate::tool::ToolName<'a>,
 }
 
