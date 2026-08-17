@@ -1,3 +1,11 @@
+# The reviews a change must pass before it merges. `gaff reviews`
+# prints them and `gaff reviews check` holds them, so the gate never
+# hard-codes a name. An absent key is an error, because no policy must
+# not read as no review required.
+reviews:
+  - fresh-eyes
+  - mutation
+
 # Repo-level gaff config. Two entries. The commit gate holds formatted
 # code and a clean clippy on pre-commit. The merge gate holds tests,
 # the missouri suite, and a fresh-eyes review note on pre-push, which

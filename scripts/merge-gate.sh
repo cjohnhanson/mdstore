@@ -54,5 +54,5 @@ if [ -d tests/missouri ]; then
     }
 fi
 
-printf '%s\n' "$gate_refs" | sh "$(dirname "$0")/review-note-check.sh"
+printf '%s\n' "$gate_refs" | gaff reviews check| sh "$(dirname "$0")/review-note-check.sh"
 echo "merge-gate: ok"
