@@ -116,8 +116,8 @@ Done, on branch fix/confined-store:
 Remaining: route the three tools through StoreDir, and missouri
 coverage for each scenario in the plan above.
 
-Note: this work touches StoreGraph::open. The codelikecody session
-plans a trust parameter there and must sequence after it.
+Note: this work touches StoreGraph::open. Another session plans a trust
+parameter there and must sequence after it.
 ## 2026-08-16 19:33 — round five, after a scratchpad wipe
 
 The session scratchpad was wiped on restart. Worktrees lived there and
