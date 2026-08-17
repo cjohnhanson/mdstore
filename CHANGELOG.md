@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- `StoreDir::rename`, `StoreDir::remove_dir` and `StoreDir::dir_is_empty`.
+  A consumer that moves a document between directories of one store had
+  no confined way to do it, so it fell back to `std::fs` on a path it
+  built. Both ends of a rename go through the handle.
+
 ## 0.3.0
 
 Breaking. A store now reads and writes through a capability handle, so

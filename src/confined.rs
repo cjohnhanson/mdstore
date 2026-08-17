@@ -224,6 +224,39 @@ impl StoreDir {
             .map_err(|e| self.io_error(rel, &e))
     }
 
+    /// Move one file to another name inside the store.
+    ///
+    /// Both names go through the handle, so neither end can leave the
+    /// store. The rename is one operation, so a reader sees the file
+    /// at the old name or the new one and never at neither. A consumer
+    /// that moved a document by reading, writing and removing left a
+    /// copy at both names when the remove failed.
+    pub fn rename(&self, from: &str, to: &str) -> Result<()> {
+        self.dir
+            .rename(from, &self.dir, to)
+            .map_err(|e| self.io_error(from, &e))
+    }
+
+    /// Remove one empty directory inside the store.
+    pub fn remove_dir(&self, rel: &str) -> Result<()> {
+        self.dir.remove_dir(rel).map_err(|e| self.io_error(rel, &e))
+    }
+
+    /// True when the directory holds no entry at all.
+    ///
+    /// Every entry counts, including a dotfile and a name that is not
+    /// valid UTF-8. A caller that removes a directory it believes is
+    /// empty must not be told so by a listing that filtered.
+    ///
+    /// A path that leaves the store, and a path with no directory, are
+    /// both not empty. Neither is a directory this store may remove.
+    #[must_use]
+    pub fn dir_is_empty(&self, rel: &str) -> bool {
+        self.dir
+            .read_dir(Self::at(rel))
+            .is_ok_and(|mut entries| entries.next().is_none())
+    }
+
     /// Create a directory and its parents inside the store.
     pub fn create_dir_all(&self, rel: &str) -> Result<()> {
         self.dir
@@ -620,6 +653,56 @@ mod tests {
             "SWAPPED",
             "a write reached the decoy"
         );
+    }
+
+    #[test]
+    fn a_move_cannot_take_a_file_out_of_the_store_or_bring_one_in() {
+        let f = Fixture::new("rename");
+        assert!(
+            f.store
+                .rename("docs/note.md", "../outside/stolen.md")
+                .is_err(),
+            "a move carried a document out of the store"
+        );
+        assert!(
+            f.store
+                .rename("../outside/secret.md", "docs/taken.md")
+                .is_err(),
+            "a move brought a file in from outside the store"
+        );
+        assert!(f.outside_is_intact());
+        assert_eq!(f.store.read("docs/note.md").unwrap(), "a note");
+
+        // A move inside the store works, and leaves nothing behind.
+        f.store.create_dir_all("docs/.closed").unwrap();
+        f.store
+            .rename("docs/note.md", "docs/.closed/note.md")
+            .unwrap();
+        assert_eq!(f.store.read("docs/.closed/note.md").unwrap(), "a note");
+        assert!(!f.store.is_document("docs/note.md"));
+    }
+
+    #[test]
+    fn an_empty_directory_is_told_apart_from_one_holding_a_dotfile() {
+        let f = Fixture::new("empty");
+        f.store.create_dir_all("docs/.closed").unwrap();
+        assert!(f.store.dir_is_empty("docs/.closed"));
+
+        // A dotfile is an entry. A listing that filtered dot names
+        // would call this empty and the remove would then fail.
+        std::fs::write(f.base.join("store/docs/.closed/.keep"), "").unwrap();
+        assert!(!f.store.dir_is_empty("docs/.closed"));
+        assert!(f.store.remove_dir("docs/.closed").is_err());
+
+        std::fs::remove_file(f.base.join("store/docs/.closed/.keep")).unwrap();
+        assert!(f.store.dir_is_empty("docs/.closed"));
+        f.store.remove_dir("docs/.closed").unwrap();
+
+        // A path that leaves the store is never empty and never
+        // removed, whatever sits there.
+        assert!(!f.store.dir_is_empty("../outside"));
+        assert!(f.store.remove_dir("../outside").is_err());
+        assert!(f.outside_is_intact());
     }
 
     // -- legitimate use --
