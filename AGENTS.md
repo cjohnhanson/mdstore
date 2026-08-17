@@ -4,8 +4,8 @@ A Rust library. It stores YAML-frontmatter markdown documents, composes
 stores into a graph, and resolves documents across that graph. It ships
 no binary.
 
-Three tools depend on it: tisket, zettel, and almanac. A breaking change
-here breaks all three.
+Three tools depend on it: tisket, zettel, and almanac. Each pins a
+revision. A breaking change here breaks their next pin bump.
 
 Read [README.md](README.md) for the document model, provenance, store
 composition, and the user layer. Read
@@ -23,8 +23,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-A push also needs a review note on its tip, written by someone who did
-not write the change. See CONTRIBUTING.md. You cannot write your own.
+A push also needs a review note on its tip. Do not write the note for
+your own change. The gate greps for the words. It cannot check who
+wrote them. See CONTRIBUTING.md.
 
 ## Rules
 

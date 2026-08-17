@@ -7,7 +7,7 @@ Do not open a public issue for a vulnerability.
 Report it privately:
 **https://github.com/cjohnhanson/mdstore/security/advisories/new**
 
-That opens a thread only maintainers can read.
+That opens a thread only you and the maintainer can read.
 
 Include what an attacker gains, what they must already control to get
 it, the affected commit, and steps that reproduce it.

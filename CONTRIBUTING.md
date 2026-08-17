@@ -23,10 +23,11 @@ run without it never compiles that code.
 
 ## Open an issue first
 
-Open an issue before a large change. A small fix needs no issue.
+Open a GitHub issue before a large change. A small fix needs no issue.
 
-Issues live in the repository as markdown files under `.tisket/`. Read
-them with `cat`, or with [tisket](https://github.com/cjohnhanson/tisket):
+The maintainer tracks work in markdown files under `.tisket/`. Those are
+read-only to a contributor. Read them with `cat`, or with
+[tisket](https://github.com/cjohnhanson/tisket):
 
 ```sh
 tisket issue list
@@ -35,9 +36,14 @@ tisket issue show <id>
 
 ## The gates
 
-Two gates decide whether a change lands. CI runs both on every pull
-request, as the check named `gate`. `main` is protected and requires
-that check, so a red gate blocks the merge.
+Two gates decide whether a change lands. CI runs both as the check
+named `gate`. `main` is protected and requires that check.
+
+**A pull request cannot currently pass the gate.** CI checks out the
+merge commit that GitHub creates for the pull request. The merge gate
+then looks for a review note on that commit, and no such note can
+exist. Open the pull request anyway. A maintainer reviews it, records
+the note, and lands it. Issue `nk4l` tracks the fix.
 
 The commit gate runs three things:
 
@@ -82,11 +88,7 @@ For sustained work, install them with
 ```sh
 cargo install --git https://github.com/cjohnhanson/gaff
 gaff init --git
-gaff trust
 ```
-
-Run `gaff trust` from your own shell. The hook refuses it inside an
-agent session, so an agent cannot grant itself command execution.
 
 To run the gates without committing:
 
@@ -104,7 +106,8 @@ gaff ci
 
 ## What not to commit
 
-`.gitignore` covers these. No gate checks them, so read the list:
+Nothing here is checked automatically. `.gitignore` stops build output
+and local editor state. The other two are on you:
 
 - Anything under `target/`.
 - An absolute path naming a home directory. It exposes an account name,
