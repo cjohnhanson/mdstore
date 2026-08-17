@@ -130,3 +130,117 @@ fn a_pull_request_refuses_an_unreadable_head_sha() {
         "expected the unreadable-sha refusal, got: {out}"
     );
 }
+
+#[test]
+fn a_pull_request_accepts_a_head_that_carries_a_note() {
+    // The refusal tests above all pass when the guard is broken open in
+    // the wrong direction. This one fails if the guard stops reading the
+    // head, so it pins the positive path.
+    let root = env!("CARGO_MANIFEST_DIR");
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .expect("git rev-parse runs")
+            .stdout,
+    )
+    .expect("the sha is utf-8");
+    let head = head.trim();
+
+    let note = Command::new("git")
+        .args(["notes", "--ref=reviews", "show", head])
+        .current_dir(root)
+        .output()
+        .expect("git notes runs");
+    if !note.status.success() {
+        // No note on HEAD, so the positive path cannot be exercised.
+        // Say so rather than passing on an untested branch.
+        eprintln!("skipped: HEAD carries no review note");
+        return;
+    }
+
+    let dir = std::env::temp_dir().join("mdstore-gate-guard-noted");
+    std::fs::create_dir_all(&dir).expect("the temp directory is made");
+    let event = dir.join("event.json");
+    std::fs::write(
+        &event,
+        format!(r#"{{"pull_request":{{"head":{{"sha":"{head}"}}}}}}"#),
+    )
+    .expect("the event payload writes");
+
+    let (code, out) = run_gate(
+        head,
+        &[
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_EVENT_NAME", "pull_request"),
+        ],
+        event.to_str(),
+    );
+    assert_eq!(code, 0, "a reviewed pull request head was refused: {out}");
+    assert!(
+        out.contains("Reading the review note on"),
+        "expected the head-sha read, got: {out}"
+    );
+}
+
+#[test]
+fn a_plain_shell_cannot_skip_the_test_run() {
+    // MERGE_GATE_SKIP_TESTS alone must not turn the tests off, or any
+    // shell could push past them. The escape also needs CARGO, which
+    // only a cargo-run process sets.
+    //
+    // A stub cargo on PATH exits non-zero, so entering the test branch
+    // fails fast instead of running the suite from inside the suite.
+    let root = env!("CARGO_MANIFEST_DIR");
+    let bin = std::env::temp_dir().join("mdstore-gate-stub-bin");
+    std::fs::create_dir_all(&bin).expect("the stub directory is made");
+    let stub = bin.join("cargo");
+    std::fs::write(&stub, "#!/bin/sh\nexit 3\n").expect("the stub writes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is executable");
+    }
+
+    let mut cmd = Command::new("sh");
+    cmd.arg("scripts/merge-gate.sh")
+        .current_dir(root)
+        .env_remove("CARGO")
+        .env("MERGE_GATE_SKIP_TESTS", "1")
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("merge-gate.sh runs");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin is piped")
+        .write_all(
+            format!("refs/heads/topic {NOTELESS} refs/heads/main 0000000000000000000000000000000000000000\n")
+                .as_bytes(),
+        )
+        .expect("the ref line writes");
+    let out = child.wait_with_output().expect("the gate finishes");
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "a plain shell skipped the tests: {text}"
+    );
+    assert!(
+        text.contains("cargo test"),
+        "expected the gate to enter the test branch, got: {text}"
+    );
+}

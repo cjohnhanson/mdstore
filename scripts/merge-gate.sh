@@ -25,10 +25,11 @@ set -e
 gate_refs=$(cat)
 
 # tests/merge_gate_guard.rs runs this script to cover the note branch.
-# Without this escape it would call cargo test from inside cargo test.
-# Nothing else sets the variable, and a caller that sets it skips only
-# the sections a test run has already covered.
-if [ -z "${MERGE_GATE_SKIP_TESTS:-}" ]; then
+# Without an escape it would call cargo test from inside cargo test.
+# The escape needs both the marker and CARGO, which only a cargo-run
+# process sets, so a plain shell cannot turn the tests off with one
+# variable. A pushing developer never has CARGO set.
+if [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; then
     echo "merge-gate: cargo test"
     # --all-features, because a feature that is off by default is still
     # shipped code. The gate once built without mcp and never compiled it.
@@ -49,7 +50,7 @@ if [ -n "${CI:-}" ]; then
     export MISSOURI_SANDBOX
 fi
 
-if [ -d tests/missouri ] && [ -z "${MERGE_GATE_SKIP_TESTS:-}" ]; then
+if [ -d tests/missouri ] && { [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; }; then
     command -v missouri >/dev/null || {
         echo "merge-gate: missouri is not on PATH and tests/missouri exists." >&2
         exit 1

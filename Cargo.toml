@@ -19,6 +19,8 @@ exclude = [
     ".gaff/",
     ".github/",
     "scripts/",
+    # Shells out to scripts/merge-gate.sh, which the line above drops.
+    "tests/merge_gate_guard.rs",
     "CONTRIBUTING.md",
     "AGENTS.md",
     ".editorconfig",
