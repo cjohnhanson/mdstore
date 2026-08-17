@@ -1247,6 +1247,54 @@ mod tests {
         unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
     }
 
+    /// A file:// declaration is already absolute and stays untouched.
+    ///
+    /// The rewrite path-joined it, because is_remote_url is
+    /// deliberately false for file://; the mangled text then resolved
+    /// to nothing, and the member degraded to a permanent
+    /// 'not in the cache' no sync could satisfy. Root-level file://
+    /// is exactly the legitimate case: the root may name anything on
+    /// its own machine.
+    #[test]
+    fn a_file_scheme_declaration_is_not_path_joined() {
+        let _env = crate::env_lock();
+        let base = scratch("filescheme");
+        let origin = base.join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let repo = init(&origin);
+        commit_files(&repo, &[("notes/a.md", "---\ntitle: A\n---\n")], "one");
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("stores.yml"),
+            format!(
+                "stores:\n  - alias: up\n    git: file://{}\n",
+                origin.display()
+            ),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        let graph = crate::store::StoreGraph::open(&root, &crate::store::LocalPaths).unwrap();
+        let url = graph
+            .members
+            .iter()
+            .find_map(|m| match &m.source {
+                crate::store::StoreSource::Git { url, .. } => Some(url.clone()),
+                _ => None,
+            })
+            .expect("the declared git member is missing");
+        assert!(
+            url.starts_with("file://"),
+            "the file scheme was path-joined away: {url}"
+        );
+        assert!(
+            !url.contains(&root.display().to_string()),
+            "the declaration was joined onto the root: {url}"
+        );
+        unsafe { std::env::remove_var("MDSTORE_CACHE_DIR") };
+    }
+
     /// A relative git declaration names a repository next to the
     /// store that declared it, not next to the process.
     ///

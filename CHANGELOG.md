@@ -34,9 +34,10 @@
   scheme-less `@` as `user@host`, so `/x/at1/x@1` and `/x/at2/y@1`
   both keyed the cache slot as `1`, and the lowercasing merged local
   repositories that differ by case. scp form now requires a user name
-  with no slash, and a local path keeps its text. A cache slot keyed
-  under the old rule for such a path gets a new key and re-clones on
-  the next sync.
+  with no slash and a colon after the @ — git's own rule — and a
+  local path keeps its text. A cache slot keyed under the old rule for
+  such a path gets a new key and re-clones on the next sync; the old
+  slot stays on disk, because no cache GC exists.
 
 
 ## 0.3.4

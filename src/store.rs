@@ -469,12 +469,15 @@ fn canonical_url(url: &str) -> String {
     if let Some((_, rest)) = u.split_once("://") {
         return rest.to_ascii_lowercase();
     }
-    // scp form has a user name before the @, and a user name has no
-    // slash. An @ after a slash is a character in a path: /x/at1/x@1
-    // read as scp kept only "1", so two such paths shared a slot, and
-    // the lowercasing merged local repositories that differ by case.
+    // scp form is user@host:path: a user name with no slash before
+    // the @, and a colon after it. An @ after a slash is a character
+    // in a path, and an @ with no colon is too: up@2 read as scp kept
+    // only "2", so two such names shared a slot, and the lowercasing
+    // merged local repositories that differ by case. git's own rule
+    // is the colon.
     if let Some((user, rest)) = u.split_once('@')
         && !user.contains('/')
+        && rest.contains(':')
     {
         return rest.replacen(':', "/", 1).to_ascii_lowercase();
     }
@@ -1086,7 +1089,14 @@ impl StoreGraph {
                 // locate, identity, the consumer's sync — sees one
                 // absolute path.
                 let decl_source = match &decl.source {
-                    StoreSource::Git { url, rev } if !is_remote_url(url) => {
+                    // A scheme is not a relative path. is_remote_url
+                    // is deliberately false for file://, and joining
+                    // that text onto the root mangled a legitimate
+                    // root-level declaration into a member no sync
+                    // could satisfy.
+                    StoreSource::Git { url, rev }
+                        if !is_remote_url(url) && !url.contains("://") =>
+                    {
                         let joined = declaring_root.join(url);
                         let resolved = joined.canonicalize().unwrap_or(joined);
                         StoreSource::Git {
@@ -1386,6 +1396,21 @@ mod tests {
             canonical_url_for_cache("/p/case"),
             "case-different local paths merged"
         );
+
+        // scp form has a colon: user@host:path. Without one, an @ in
+        // the first path segment still collapsed: up@2 and down@2
+        // both keyed 2, and alpha@2/kb and beta@2/kb both keyed 2/kb.
+        assert_ne!(
+            canonical_url_for_cache("up@2"),
+            canonical_url_for_cache("down@2"),
+            "two first-segment @ names share a slot key"
+        );
+        assert_ne!(
+            canonical_url_for_cache("alpha@2/kb"),
+            canonical_url_for_cache("beta@2/kb"),
+            "two @-segment paths share a slot key"
+        );
+        assert_eq!(canonical_url_for_cache("up@2"), "up@2");
     }
 
     // -- references --
