@@ -428,8 +428,8 @@ pub fn member_identity(
         // A checkout that is a repository reads whatever its working
         // tree holds, and HEAD is the closest stable name for that.
         Some(StoreContent::Dir(dir)) => origin_of
-            .origin_url(dir)
-            .and_then(|_| crate::git::resolve_rev(dir, None).ok()),
+            .origin_url(dir.root())
+            .and_then(|_| crate::git::resolve_rev(dir.root(), None).ok()),
         None => None,
     };
     match rev {
@@ -528,7 +528,7 @@ impl StoresConfig {
     /// Load `stores.yml` from a store root. A missing file is an empty
     /// config, so every repo written before this feature keeps working.
     pub fn load(root: &Path) -> Result<Self> {
-        Self::load_from(&StoreContent::Dir(root.to_path_buf()))
+        Self::load_from(&StoreContent::Dir(crate::confined::StoreDir::open(root)?))
     }
 
     /// Load `stores.yml` from a store, local or remote.
@@ -731,7 +731,13 @@ impl<T: SourceLocator> OriginLookup for T {
 /// That is what lets two consumers pin different revisions of one URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreContent {
-    Dir(PathBuf),
+    /// A directory on this machine, held open.
+    ///
+    /// The handle, not the path, is what the store keeps. A path would
+    /// have to be re-opened for each operation, and each re-open
+    /// resolves through ambient authority, so a root swapped between
+    /// two reads is followed.
+    Dir(crate::confined::StoreDir),
     GitTree {
         /// The bare clone.
         cache: PathBuf,
@@ -752,7 +758,7 @@ impl StoreContent {
     /// this machine.
     pub fn read(&self, rel: &str) -> Result<String> {
         match self {
-            StoreContent::Dir(dir) => read_document(&dir.join(rel)),
+            StoreContent::Dir(dir) => dir.read(rel),
             StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel),
         }
     }
@@ -760,7 +766,7 @@ impl StoreContent {
     /// True when the store holds this file as a regular file.
     pub fn exists(&self, rel: &str) -> bool {
         match self {
-            StoreContent::Dir(dir) => is_regular_file(&dir.join(rel)),
+            StoreContent::Dir(dir) => dir.is_document(rel),
             StoreContent::GitTree { cache, rev, .. } => crate::git::show(cache, rev, rel).is_ok(),
         }
     }
@@ -772,10 +778,7 @@ impl StoreContent {
     #[must_use]
     pub fn present_but_irregular(&self, rel: &str) -> bool {
         match self {
-            StoreContent::Dir(dir) => {
-                let p = dir.join(rel);
-                std::fs::symlink_metadata(&p).is_ok() && !is_regular_file(&p)
-            }
+            StoreContent::Dir(dir) => dir.present_but_irregular(rel),
             // A git tree holds objects, not links into a filesystem.
             StoreContent::GitTree { .. } => false,
         }
@@ -795,20 +798,7 @@ impl StoreContent {
     pub fn subdirectories(&self, subdir: &str) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         match self {
-            StoreContent::Dir(root) => {
-                let Ok(entries) = std::fs::read_dir(root.join(subdir)) else {
-                    return names;
-                };
-                names.extend(
-                    entries
-                        .flatten()
-                        // file_type() reads the dirent, so it does not
-                        // follow a link.
-                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
-                        .filter_map(|e| e.file_name().to_str().map(ToString::to_string))
-                        .filter(|n| !n.starts_with('.')),
-                );
-            }
+            StoreContent::Dir(root) => names.extend(root.subdirectories(subdir)),
             StoreContent::GitTree { cache, rev, .. } => {
                 // A git tree holds objects, so no link can leave it.
                 if let Ok(paths) = crate::git::list_tree(cache, rev, subdir) {
@@ -834,7 +824,7 @@ impl StoreContent {
     /// store cannot reach a file outside the repository.
     pub fn scan(&self, subdir: &str) -> Result<Scan> {
         match self {
-            StoreContent::Dir(root) => scan_documents(&root.join(subdir)),
+            StoreContent::Dir(root) => root.scan(subdir),
             StoreContent::GitTree { cache, rev, .. } => {
                 let mut scan = Scan::default();
                 let mut names = crate::git::list_tree(cache, rev, subdir)?;
@@ -856,7 +846,7 @@ impl StoreContent {
     /// A directory on this machine, if the store has one.
     pub fn dir(&self) -> Option<&Path> {
         match self {
-            StoreContent::Dir(p) => Some(p),
+            StoreContent::Dir(d) => Some(d.root()),
             StoreContent::GitTree { .. } => None,
         }
     }
@@ -903,14 +893,18 @@ impl SourceLocator for LocalPaths {
                     declaring_root.join(p)
                 };
                 if joined.is_dir() {
-                    Ok(StoreContent::Dir(joined))
+                    crate::confined::StoreDir::open(&joined)
+                        .map(StoreContent::Dir)
+                        .map_err(|e| e.to_string())
                 } else {
                     Err(format!("no directory at {}", joined.display()))
                 }
             }
             StoreSource::Blob { url } => {
                 let dir = crate::blob::locate(url)?;
-                Ok(StoreContent::Dir(dir))
+                crate::confined::StoreDir::open(&dir)
+                    .map(StoreContent::Dir)
+                    .map_err(|e| e.to_string())
             }
             StoreSource::Git { url, rev } => {
                 if !crate::git::is_cached(url) {
@@ -981,7 +975,7 @@ impl StoreGraph {
         // does, revision included. A root keyed without the revision
         // matched a dependency that carried one, or failed to match a
         // cycle that closed back onto it.
-        let root_content = StoreContent::Dir(root.to_path_buf());
+        let root_content = StoreContent::Dir(crate::confined::StoreDir::open(root)?);
         let root_id = member_identity(
             &StoreSource::Path(root.to_path_buf()),
             Some(&root_content),
@@ -993,7 +987,7 @@ impl StoreGraph {
             id: root_id,
             alias_path: Vec::new(),
             source: StoreSource::Path(root.to_path_buf()),
-            content: Some(StoreContent::Dir(root.to_path_buf())),
+            content: Some(root_content.clone()),
             unavailable: None,
             remote: false,
         }];
@@ -1809,7 +1803,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, store.join("linked.md")).unwrap();
 
-        let content = StoreContent::Dir(store);
+        let content = StoreContent::Dir(crate::confined::StoreDir::open(&store).unwrap());
         assert!(!content.exists("linked.md"), "a link is not a file here");
         assert!(content.read("linked.md").is_err());
     }
@@ -1937,7 +1931,9 @@ mod tests {
             ) -> std::result::Result<StoreContent, String> {
                 match source {
                     // Stand in for a fetched clone.
-                    StoreSource::Git { .. } => Ok(StoreContent::Dir(self.0.clone())),
+                    StoreSource::Git { .. } => crate::confined::StoreDir::open(&self.0)
+                        .map(StoreContent::Dir)
+                        .map_err(|e| e.to_string()),
                     other => LocalPaths.locate(other, declaring_root),
                 }
             }
@@ -2096,7 +2092,8 @@ mod tests {
         std::os::unix::fs::symlink(base.join("outside"), base.join("store/docs/linked")).unwrap();
         std::fs::create_dir_all(base.join("store/docs/.hidden")).unwrap();
 
-        let content = StoreContent::Dir(base.join("store"));
+        let content =
+            StoreContent::Dir(crate::confined::StoreDir::open(&base.join("store")).unwrap());
         assert_eq!(content.subdirectories("docs"), vec!["real".to_string()]);
 
         let _ = std::fs::remove_dir_all(&base);
@@ -2318,5 +2315,58 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, text).unwrap();
+    }
+
+    /// The claim the whole capability exists to make.
+    ///
+    /// Every one of these returned the outside file before
+    /// StoreContent held a handle. The module was present and no
+    /// caller went through it.
+    #[test]
+    fn a_store_read_cannot_leave_the_store() {
+        let base = std::env::temp_dir().join(format!("mdstore-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        write(&base.join("outside/secret.md"), "SECRET");
+        write(&base.join("store/docs/real.md"), "REAL");
+        let content =
+            StoreContent::Dir(crate::confined::StoreDir::open(&base.join("store")).unwrap());
+
+        assert!(
+            content.read("../outside/secret.md").is_err(),
+            "a climbing read escaped"
+        );
+        assert!(
+            !content.exists("../outside/secret.md"),
+            "a climbing path was reported present"
+        );
+        assert!(
+            content.read("/etc/hosts").is_err(),
+            "an absolute read escaped"
+        );
+        assert!(
+            !content.present_but_irregular("/etc"),
+            "an absolute path answered for a directory outside the store"
+        );
+        // An escape is refused where the signature can carry a
+        // refusal, and is empty where it cannot. A missing directory
+        // inside the store stays Ok(empty); only leaving is an error.
+        assert!(
+            content.scan("../outside").is_err(),
+            "a climbing scan listed documents outside the store"
+        );
+        assert!(
+            content.scan("nosuchdir").unwrap().entries.is_empty(),
+            "a missing directory inside the store must not be an error"
+        );
+        assert!(
+            !content.subdirectories("..").iter().any(|n| n == "outside"),
+            "a climbing listing named a sibling of the store"
+        );
+
+        // The store still works for what is genuinely inside it.
+        assert_eq!(content.read("docs/real.md").unwrap(), "REAL");
+        assert_eq!(content.scan("docs").unwrap().entries.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

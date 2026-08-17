@@ -72,6 +72,16 @@ impl StoreDir {
         })
     }
 
+    /// The name of the store root itself.
+    ///
+    /// An empty relative path names the root to every caller, but the
+    /// operating system refuses it. Reading it as "." made a scan of
+    /// the root return no documents, and the NotFound arm hid that as
+    /// an empty store.
+    fn at(rel: &str) -> &str {
+        if rel.is_empty() { "." } else { rel }
+    }
+
     /// Where this store is on this machine.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -215,9 +225,13 @@ impl StoreDir {
     /// A link is skipped because the dirent type of a link is a link,
     /// not a directory, and this never follows it. Names starting with
     /// a dot are omitted. The result is sorted.
+    ///
+    /// A path that leaves the store lists nothing. This signature
+    /// carries no refusal, so the escape is empty rather than an
+    /// error; `scan` and `read` refuse the same path outright.
     #[must_use]
     pub fn subdirectories(&self, rel: &str) -> Vec<String> {
-        let Ok(entries) = self.dir.read_dir(rel) else {
+        let Ok(entries) = self.dir.read_dir(Self::at(rel)) else {
             return Vec::new();
         };
         let mut names: Vec<String> = entries
@@ -237,7 +251,7 @@ impl StoreDir {
     /// silent.
     pub fn scan(&self, rel: &str) -> Result<Scan> {
         let mut scan = Scan::default();
-        let entries = match self.dir.read_dir(rel) {
+        let entries = match self.dir.read_dir(Self::at(rel)) {
             Ok(entries) => entries,
             // A store with no document directory yet holds no
             // documents. That is not a failure.

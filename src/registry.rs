@@ -123,7 +123,9 @@ impl<L: SourceLocator> SourceLocator for RegistryLocator<L> {
                 self.redirected
                     .borrow_mut()
                     .insert(url.clone(), local.to_path_buf());
-                return Ok(StoreContent::Dir(local.to_path_buf()));
+                return crate::confined::StoreDir::open(local)
+                    .map(StoreContent::Dir)
+                    .map_err(|e| e.to_string());
             }
             return Err(format!(
                 "the registry binds {url} to {}, which is not a directory",
@@ -195,7 +197,7 @@ mod tests {
             rev: None,
         };
         let content = locator.locate(&source, &base).unwrap();
-        assert_eq!(content, StoreContent::Dir(checkout.clone()));
+        assert_eq!(content.dir(), Some(checkout.as_path()));
         assert_eq!(
             locator.redirected(),
             vec![("git@example.com:org/kb.git".to_string(), checkout)]
@@ -228,7 +230,7 @@ mod tests {
         let content = locator
             .locate(&StoreSource::Path("dep".into()), &base)
             .unwrap();
-        assert_eq!(content, StoreContent::Dir(base.join("dep")));
+        assert_eq!(content.dir(), Some(base.join("dep").as_path()));
         assert!(locator.redirected().is_empty());
     }
 }
