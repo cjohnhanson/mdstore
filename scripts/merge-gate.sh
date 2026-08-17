@@ -87,7 +87,10 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_requ
         exit 1
         ;;
     esac
-    git fetch --quiet origin "+refs/notes/reviews:refs/notes/reviews" 2>/dev/null || true
+    # No fetch here. A forced fetch of the notes ref discards a local
+    # note that no push carries yet, and a gate must not write to the
+    # repository it checks. The workflow fetches notes in its own step
+    # before this runs.
     gate_refs="refs/heads/pr $head_sha refs/heads/main 0000000000000000000000000000000000000000"
     echo "merge-gate: pull request. Reading the review note on $head_sha."
 fi
