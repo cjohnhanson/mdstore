@@ -614,6 +614,27 @@ fn mirror_local(
 }
 
 /// Copies objects from one repository's database to another's, once each.
+/// How this crate indexes a pack it just wrote.
+///
+/// One constructor, used by write_pack and by the test that pins the
+/// mode. Built inline in both places, the test pinned gix-pack's
+/// behaviour and left this crate's choice of mode unguarded at the
+/// only site that matters.
+///
+/// Verify re-reads every entry. Restore truncates at the first fault
+/// and publishes what came before, which lands a slot whose pack
+/// claims more objects than its index holds: every later read fails,
+/// permanently, until a person deletes the slot.
+fn bundle_options(object_hash: gix::hash::Kind) -> gix_pack::bundle::write::Options {
+    gix_pack::bundle::write::Options {
+        thread_limit: None,
+        iteration_mode: gix_pack::data::input::Mode::Verify,
+        index_version: gix_pack::index::Version::default(),
+        object_hash,
+        ..Default::default()
+    }
+}
+
 /// One pack for a create's whole closure.
 ///
 /// The ids arrive in walk order, commits before their trees and
@@ -668,13 +689,7 @@ fn write_pack(src: &gix::Repository, ids: Vec<gix::ObjectId>, dst_objects: &Path
         &mut gix::progress::Discard,
         &std::sync::atomic::AtomicBool::new(false),
         None::<gix::objs::find::Never>,
-        gix_pack::bundle::write::Options {
-            thread_limit: None,
-            iteration_mode: gix_pack::data::input::Mode::Verify,
-            index_version: gix_pack::index::Version::default(),
-            object_hash: src.object_hash(),
-            ..Default::default()
-        },
+        bundle_options(src.object_hash()),
     )
     .map_err(|e| Error::InvalidStore(format!("index pack: {e}")))?;
     Ok(())
@@ -1332,13 +1347,7 @@ mod tests {
             &mut gix::progress::Discard,
             &std::sync::atomic::AtomicBool::new(false),
             None::<gix::objs::find::Never>,
-            gix_pack::bundle::write::Options {
-                thread_limit: None,
-                iteration_mode: gix_pack::data::input::Mode::Verify,
-                index_version: gix_pack::index::Version::default(),
-                object_hash: gix::hash::Kind::Sha1,
-                ..Default::default()
-            },
+            bundle_options(gix::hash::Kind::Sha1),
         );
         assert!(
             refused.is_err(),
@@ -1357,13 +1366,7 @@ mod tests {
             &mut gix::progress::Discard,
             &std::sync::atomic::AtomicBool::new(false),
             None::<gix::objs::find::Never>,
-            gix_pack::bundle::write::Options {
-                thread_limit: None,
-                iteration_mode: gix_pack::data::input::Mode::Verify,
-                index_version: gix_pack::index::Version::default(),
-                object_hash: gix::hash::Kind::Sha1,
-                ..Default::default()
-            },
+            bundle_options(gix::hash::Kind::Sha1),
         )
         .expect("a sound pack was refused");
         assert!(dir.join("HEAD").exists());
@@ -1461,6 +1464,21 @@ mod tests {
         .unwrap();
         std::fs::write(admin.join("HEAD"), format!("{c1}\n")).unwrap();
         unsafe { std::env::set_var("MDSTORE_CACHE_DIR", base.join("cache")) };
+
+        // The fixture is only a fixture if it really is a worktree:
+        // the two dirs must differ, and the git dir must be the one
+        // without objects. Otherwise this passes for the wrong reason.
+        let probe = gix::open_opts(&linked, gix::open::Options::isolated()).unwrap();
+        assert_ne!(
+            probe.git_dir(),
+            probe.common_dir(),
+            "the fixture is not a linked worktree"
+        );
+        assert!(
+            !probe.git_dir().join("objects").is_dir(),
+            "the fixture's git dir has objects, so it cannot catch the bug"
+        );
+        drop(probe);
 
         let url = linked.display().to_string();
         let dir = ensure_clone(&url).expect("a linked worktree source failed to mirror");
