@@ -1002,6 +1002,7 @@ checksum = "6d5446127b269706e85998065267ddd2ccc3550179da6780b22fe496175ccb20"
 dependencies = [
  "clru",
  "gix-chunk",
+ "gix-diff",
  "gix-error",
  "gix-features",
  "gix-hash",
@@ -1009,6 +1010,7 @@ dependencies = [
  "gix-object",
  "gix-path",
  "gix-tempfile",
+ "gix-traverse",
  "gix-zlib",
  "memmap2",
  "parking_lot",
@@ -1876,6 +1878,8 @@ version = "0.4.0"
 dependencies = [
  "cap-std",
  "gix",
+ "gix-odb",
+ "gix-pack",
  "nix",
  "rand",
  "reqwest",

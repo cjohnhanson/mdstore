@@ -10,6 +10,22 @@ readme = "README.md"
 authors = ["Cody Hanson"]
 keywords = ["markdown", "frontmatter", "yaml", "document-store", "storage"]
 categories = ["parser-implementations", "text-processing", "filesystem"]
+# Repository machinery belongs on GitHub. A consumer installing the
+# crate gets the source, the license, the changelog, and the two
+# documents that concern them: the README and the security policy.
+exclude = [
+    ".tisket/",
+    "tisket.yml",
+    ".gaff/",
+    ".github/",
+    "scripts/",
+    # Shells out to scripts/merge-gate.sh, which the line above drops.
+    "tests/merge_gate_guard.rs",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    ".editorconfig",
+    "rust-toolchain.toml",
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +43,11 @@ gix = { version = "0.86", default-features = false, features = [
 # same reqwest gix uses, so one HTTP stack.
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 
+# The pack writer for the mirror's first sync, and the object-store
+# handle its Find side needs. Both already in the graph through gix;
+# these lines only make the edge direct.
+gix-pack = "0.73"
+gix-odb = "0.83"
 yaml_serde = "0.10"
 thiserror = "2"
 url = "2"

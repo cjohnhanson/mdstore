@@ -50,3 +50,26 @@ Options, none decided:
 
 The module header currently says what this does not cover, and this is
 not in the list.
+
+## Scratch Notes
+
+## 2026-08-17 — cap-directories, raised by Cody
+
+The cap-std family's cap-directories crate opens the standard user
+directories (config, cache, data) as already-open Dir handles. It does
+not touch this issue's core — a root named by store content is still
+opened by something ambient — but it names the right shape for the
+ambient roots mdstore itself owns:
+
+- cache_root() builds a PathBuf from MDSTORE_CACHE_DIR or a default,
+  and blob.rs writes network-supplied index names onto it through a
+  predicate, the exact pattern the confinement work deleted elsewhere.
+  Opening the cache root once as a Dir and writing through it closes
+  that.
+- The user config dir, likewise.
+
+One caveat before adopting it for the config dir: cap-directories
+derives locations the way the directories crate does, through HOME,
+and the user-config work deliberately rejected HOME as repo-settable
+(direnv, mise) in favour of the passwd database. Adopting it there
+reopens that question; adopting it for the cache root does not.

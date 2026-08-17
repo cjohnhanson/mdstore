@@ -464,15 +464,24 @@ pub(crate) fn canonical_url_for_cache(url: &str) -> String {
 fn canonical_url(url: &str) -> String {
     let u = url.trim().trim_end_matches('/');
     let u = u.strip_suffix(".git").unwrap_or(u);
-    // git@host:path and https://host/path name the same repository.
-    let stripped = match u.split_once("://") {
-        Some((_, rest)) => rest.to_string(),
-        None => match u.split_once('@') {
-            Some((_, rest)) => rest.replacen(':', "/", 1),
-            None => u.to_string(),
-        },
-    };
-    stripped.to_ascii_lowercase()
+    // git@host:path and https://host/path name the same repository. A
+    // remote spelling folds and lowercases; a local path is neither.
+    if let Some((_, rest)) = u.split_once("://") {
+        return rest.to_ascii_lowercase();
+    }
+    // scp form is user@host:path: a user name with no slash before
+    // the @, and a colon after it. An @ after a slash is a character
+    // in a path, and an @ with no colon is too: up@2 read as scp kept
+    // only "2", so two such names shared a slot, and the lowercasing
+    // merged local repositories that differ by case. git's own rule
+    // is the colon.
+    if let Some((user, rest)) = u.split_once('@')
+        && !user.contains('/')
+        && rest.contains(':')
+    {
+        return rest.replacen(':', "/", 1).to_ascii_lowercase();
+    }
+    u.to_string()
 }
 
 /// The canonical identity of a store.
@@ -1069,7 +1078,36 @@ impl StoreGraph {
                         StoreSource::Git { .. } | StoreSource::Blob { .. }
                     );
 
-                let located = locator.locate(&decl.source, &declaring_root);
+                // A relative local git declaration names a repository
+                // next to the store that declared it. The declared
+                // text reached the cache untouched, so `git: ../up` in
+                // two roots keyed one slot and the second root read
+                // the first root's mirror, and the fetch resolved the
+                // path against the process cwd. Resolved here, after
+                // the guards, so a dependency's declaration is still
+                // judged on what it wrote, and everything downstream —
+                // locate, identity, the consumer's sync — sees one
+                // absolute path.
+                let decl_source = match &decl.source {
+                    // A scheme is not a relative path. is_remote_url
+                    // is deliberately false for file://, and joining
+                    // that text onto the root mangled a legitimate
+                    // root-level declaration into a member no sync
+                    // could satisfy.
+                    StoreSource::Git { url, rev }
+                        if !is_remote_url(url) && !url.contains("://") =>
+                    {
+                        let joined = declaring_root.join(url);
+                        let resolved = joined.canonicalize().unwrap_or(joined);
+                        StoreSource::Git {
+                            url: resolved.display().to_string(),
+                            rev: rev.clone(),
+                        }
+                    }
+                    other => other.clone(),
+                };
+
+                let located = locator.locate(&decl_source, &declaring_root);
                 let (content, unavailable) = match located {
                     Ok(c) => (Some(c), None),
                     Err(why) => {
@@ -1095,9 +1133,9 @@ impl StoreGraph {
                 let located_at = content
                     .as_ref()
                     .and_then(|c| c.dir().map(Path::to_path_buf))
-                    .or_else(|| on_machine_location(&decl.source));
+                    .or_else(|| on_machine_location(&decl_source));
                 let id = member_identity(
-                    &decl.source,
+                    &decl_source,
                     content.as_ref(),
                     located_at.as_deref(),
                     &LookupAdapter(locator),
@@ -1141,7 +1179,7 @@ impl StoreGraph {
                 members.push(Member {
                     id,
                     alias_path,
-                    source: decl.source.clone(),
+                    source: decl_source.clone(),
                     content,
                     unavailable,
                     remote: child_remote,
@@ -1333,6 +1371,69 @@ mod tests {
 
     fn aliases(list: &[&str]) -> Aliases {
         Aliases(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// An @ in a local path is not scp syntax.
+    ///
+    /// canonical_url read any scheme-less @ as user@host, kept what
+    /// followed, and lowercased it. /x/at1/x@1 and /x/at2/y@1 both
+    /// became "1" and shared one cache slot, and two local paths
+    /// differing by case merged on a case-sensitive filesystem.
+    #[test]
+    fn a_local_path_with_an_at_sign_is_not_scp_form() {
+        // Two different local declarations stay two slots.
+        let a = canonical_url_for_cache("/x/at1/x@1");
+        let b = canonical_url_for_cache("/x/at2/y@1");
+        assert_ne!(a, b, "two local paths with @ share a slot key");
+        assert_eq!(a, "/x/at1/x@1", "a local path was rewritten: {a}");
+
+        // A relative declaration too.
+        assert_eq!(canonical_url_for_cache("../up@2"), "../up@2");
+
+        // Real scp form still folds onto its https spelling.
+        assert_eq!(
+            canonical_url_for_cache("git@github.com:Owner/Repo.git"),
+            "github.com/owner/repo"
+        );
+        assert_eq!(
+            canonical_url_for_cache("https://GitHub.com/Owner/Repo/"),
+            "github.com/owner/repo"
+        );
+
+        // Case distinguishes local repositories.
+        assert_ne!(
+            canonical_url_for_cache("/p/Case"),
+            canonical_url_for_cache("/p/case"),
+            "case-different local paths merged"
+        );
+
+        // scp form has a colon: user@host:path. Without one, an @ in
+        // the first path segment still collapsed: up@2 and down@2
+        // both keyed 2, and alpha@2/kb and beta@2/kb both keyed 2/kb.
+        assert_ne!(
+            canonical_url_for_cache("up@2"),
+            canonical_url_for_cache("down@2"),
+            "two first-segment @ names share a slot key"
+        );
+        assert_ne!(
+            canonical_url_for_cache("alpha@2/kb"),
+            canonical_url_for_cache("beta@2/kb"),
+            "two @-segment paths share a slot key"
+        );
+        assert_eq!(canonical_url_for_cache("up@2"), "up@2");
+
+        // Both conditions are load-bearing, and only a path carrying
+        // BOTH a slash before the @ and a colon after it tells them
+        // apart. Without the no-slash test these two collapse onto
+        // "1/2" together, which is this fix's own bug in its own
+        // shape; the colon test alone does not catch it.
+        assert_ne!(
+            canonical_url_for_cache("/a/x@1:2"),
+            canonical_url_for_cache("/b/y@1:2"),
+            "two absolute paths with @ and : share a slot key"
+        );
+        assert_eq!(canonical_url_for_cache("/a/x@1:2"), "/a/x@1:2");
+        assert_eq!(canonical_url_for_cache("~/w/x@1:2"), "~/w/x@1:2");
     }
 
     // -- references --

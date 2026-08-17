@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.3.6
+
+### Changed
+
+- A first sync writes one pack instead of a loose file per object. A
+  68 MB source produced 10,395 loose files, and the slot only ever
+  grew. The mirror's walk collects the closure, the pack pipeline
+  recompresses it from the source odb, and the bundle writer indexes
+  the stream into objects/pack. An update still writes its small delta
+  loose. gix-pack and gix-odb become direct dependencies; both were
+  already in the graph through gix.
+
+  Deltas are not carried over: every object is re-encoded as a full
+  base, so a history-heavy source packs larger than git would pack it
+  — measured 11x on a 150-commit single-file history. Still far
+  smaller than loose, which is what this replaces: 908 KB packed
+  against 3,600 KB loose on that source.
+
+
+## 0.3.5
+
+### Fixed
+
+- A relative `git:` declaration in the ROOT store resolves against
+  that store. A dependency's never reaches the rewrite: the
+  anchored-to-one-machine guard refuses it first, because the guard
+  resolves a relative git url against the process directory and so
+  sees an absolute path. That guard behaviour is pre-existing and
+  wrong on its own terms; filed separately. The declared text
+  reached the cache untouched, so
+  `git: ../up` in two roots keyed one slot, the second root read the
+  first root's mirror, and the fetch resolved the path against the
+  process cwd. The walk resolves it once, after the location guards,
+  and locate, identity and a consumer's sync all see one absolute
+  path.
+- A staging directory from a create that died is swept before the
+  next create. The sweep ran only when the slot already existed, so a
+  create that never completed left its `<slot>.tmp-<pid>` forever.
+  Only a sibling of THIS slot, older than an hour, goes. The age is a
+  weaker signal than it looks: a write under objects/ does not move
+  the staging root's mtime, so a create running over an hour looks
+  stale to a concurrent peer of the same slot. The damage is bounded
+  to one failed rename, because the rename is the only publish. The
+  issue proposed a pid-liveness check; `nix` is already a dependency
+  and would need one more feature, but it does not exist on Windows,
+  which is why age was chosen.
+- An `@` in a local path is not scp syntax. `canonical_url` read any
+  scheme-less `@` as `user@host`, so `/x/at1/x@1` and `/x/at2/y@1`
+  both keyed the cache slot as `1`, and the lowercasing merged local
+  repositories that differ by case. scp form now requires a user name
+  with no slash and a colon after the @. That is close to git's rule
+  and not identical: git takes the first colon before the first slash,
+  so `up@2/kb:x` is local to git and folds here. Reachable only
+  outside the graph walk, which resolves such text to an absolute path
+  first. A cache slot keyed under the old rule for
+  such a path gets a new key and re-clones on the next sync; the old
+  slot stays on disk, because no cache GC exists.
+
+
 ## 0.3.4
 
 ### Fixed

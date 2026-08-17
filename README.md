@@ -178,11 +178,13 @@ does not pull in the server stack.
 
 ## Related
 
-- [tisket](https://github.com/cjohnhanson/tisket) — file-based issue tracker built on mdstore
-- [zettel](https://github.com/cjohnhanson/zettel) — zettelkasten built on mdstore
-- [almanac](https://github.com/cjohnhanson/almanac) — agent skill aggregator built on mdstore
-- [belmont](https://github.com/cjohnhanson/belmont) — secrets manager for LLM agents
-- [codelikecody](https://github.com/cjohnhanson/codelikecody) — workflow engine that bundles these
+- [tisket](https://github.com/cjohnhanson/tisket) — issue tracker. Markdown issues with YAML frontmatter, in the repository
+- [zettel](https://github.com/cjohnhanson/zettel) — zettelkasten notes for a repository
+- [almanac](https://github.com/cjohnhanson/almanac) — agent skill index, over pluggable sources
+- [gaff](https://github.com/cjohnhanson/gaff) — context-lifecycle handler for coding agents
+- [missouri](https://github.com/cjohnhanson/missouri) — end-to-end tests as directed graphs of filesystem states
+
+tisket, zettel, and almanac store their documents with mdstore.
 
 ## License
 
