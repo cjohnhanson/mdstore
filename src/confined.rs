@@ -117,8 +117,6 @@ impl StoreDir {
     /// planted, and the rename means a reader sees the old document or
     /// the new one and never a half-written one.
     pub fn write(&self, rel: &str, contents: &str) -> Result<()> {
-        use std::io::Write as _;
-
         let parent = Path::new(rel).parent().unwrap_or(Path::new(""));
         let name = Path::new(rel)
             .file_name()
