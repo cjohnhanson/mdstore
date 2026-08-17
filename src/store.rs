@@ -1300,14 +1300,24 @@ pub fn sync_source(source: &StoreSource) -> Result<()> {
 ///
 /// One predicate serves every tool. A guard that lives in one of two
 /// sibling tools is a guard that is missing from the other.
-pub fn is_plain_stem(input: &str) -> bool {
-    !input.is_empty()
-        && !input.contains('/')
-        && !input.contains('\\')
-        && input != "."
-        && input != ".."
-        && !input.starts_with('.')
-        && !input.contains('\0')
+///
+/// `const`, so a caller can reject a name at compile time. That is why
+/// the body walks bytes rather than calling `str::contains`, which is
+/// not const. A leading `.` covers `.`, `..` and any hidden name, so no
+/// separate check for those remains. The accepted set is unchanged.
+pub const fn is_plain_stem(input: &str) -> bool {
+    let b = input.as_bytes();
+    if b.is_empty() || b[0] == b'.' {
+        return false;
+    }
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'/' || b[i] == b'\\' || b[i] == 0 {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::store::{SourceLocator, StoreContent, StoreSource};
+use crate::tool::ToolName;
 
 /// The named tool's registry file. A user overriding a URL edits the
 /// directory of the tool they run, for the same reason the user config
@@ -28,7 +29,7 @@ use crate::store::{SourceLocator, StoreContent, StoreSource};
 /// `$HOME` supply the base. A repo can therefore choose which registry
 /// answers, and the registry decides which content a declared URL
 /// resolves to. Filed as zfip.
-pub fn registry_path(tool: &str) -> PathBuf {
+pub fn registry_path(tool: ToolName<'_>) -> PathBuf {
     if let Ok(p) = std::env::var("MDSTORE_REGISTRY") {
         return PathBuf::from(p);
     }
@@ -38,13 +39,11 @@ pub fn registry_path(tool: &str) -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    // An absolute `tool` escapes the base here: `join` drops the base
-    // for an absolute component, and a leading `{tool}` in a format
-    // string is absolute for the same input. `config_path` contains the
-    // same input only because its format string opens with a literal.
-    // Neither function validates the name, and no caller can supply one
-    // that is not a compile-time constant. Filed as sv4p.
-    base.join(tool).join("registry.yml")
+    // `ToolName` has already refused a separator, a parent component and
+    // an absolute name, so this `join` cannot discard the base. Before
+    // that type existed, `tool = "/etc/cron.d"` gave
+    // `/etc/cron.d/registry.yml`.
+    base.join(tool.as_str()).join("registry.yml")
 }
 
 /// One override: a declared source, and where it lives on this machine.
@@ -66,7 +65,7 @@ pub struct Registry {
 impl Registry {
     /// Load the named tool's registry. A missing file is an empty
     /// registry.
-    pub fn load(tool: &str) -> Result<Self> {
+    pub fn load(tool: ToolName<'_>) -> Result<Self> {
         Self::load_from(&registry_path(tool))
     }
 
@@ -161,6 +160,10 @@ mod tests {
     use super::*;
     use crate::store::LocalPaths;
 
+    fn named(tool: &str) -> ToolName<'_> {
+        ToolName::new(tool).expect("the test tool name must be one plain component")
+    }
+
     fn tempdir(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
             "mdstore-reg-{}-{name}-{:?}",
@@ -178,8 +181,8 @@ mod tests {
         // already reads: two names through one call must differ, and
         // each must end in its own directory. A tool argument that the
         // body ignores collapses both, whatever the base resolves to.
-        let a = registry_path("tisket");
-        let b = registry_path("zettel");
+        let a = registry_path(named("tisket"));
+        let b = registry_path(named("zettel"));
 
         // MDSTORE_REGISTRY answers for every tool by design, so the
         // per-tool assertions cannot hold under it. Assert that
@@ -195,7 +198,7 @@ mod tests {
         assert!(a.ends_with("tisket/registry.yml"), "{}", a.display());
         assert!(b.ends_with("zettel/registry.yml"), "{}", b.display());
         for tool in ["tisket", "zettel", "almanac"] {
-            let p = registry_path(tool);
+            let p = registry_path(named(tool));
             // Whole-string, not ends_with. The base is environment
             // dependent, so there is no component to anchor against,
             // and a reintroduced prefix keeps the tail intact.

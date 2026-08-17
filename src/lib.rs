@@ -12,6 +12,7 @@ pub mod selector;
 pub mod slug;
 pub mod snapshot;
 pub mod store;
+pub mod tool;
 pub mod userconfig;
 
 pub use document::{Document, parse, serialize};
@@ -25,6 +26,7 @@ pub use store::{
     Member, StoreContent, StoreGraph, StoreId, StoreRef, StoreSource, StoresConfig, is_plain_stem,
     member_identity,
 };
+pub use tool::ToolName;
 
 /// Tests that set `MDSTORE_CACHE_DIR` take this lock first. The env is
 /// process-global and cargo runs tests on threads.

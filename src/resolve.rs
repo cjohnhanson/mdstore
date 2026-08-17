@@ -50,7 +50,10 @@ pub struct Resolved {
 pub struct Vocabulary<'a> {
     pub marker: &'a str,
     pub noun: &'a str,
-    pub tool: &'a str,
+    /// The same type the config path takes. Two independent strings let
+    /// a consumer print an error naming a file it never reads, and no
+    /// test noticed; one type makes that a compile error.
+    pub tool: crate::tool::ToolName<'a>,
 }
 
 /// Resolve the root for one command.
@@ -176,10 +179,15 @@ fn owned_by_caller(_dir: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // The shape every consumer uses: one const, rejected at compile time
+    // if the name is not one plain path component.
     const V: Vocabulary<'static> = Vocabulary {
         marker: "tool.yml",
         noun: "tracker",
-        tool: "tool",
+        tool: match crate::tool::ToolName::new("tool") {
+            Some(t) => t,
+            None => panic!("the tool name must be one plain path component"),
+        },
     };
 
     fn scratch(tag: &str) -> PathBuf {
