@@ -1,0 +1,116 @@
+# Cutting a release: bump the version in Cargo.toml, commit, tag, push
+# the tag. This runs from the tag.
+#
+# mdstore is a library. It ships no binary, so there is nothing to
+# cross-compile and no archive to attach. The tag creates a GitHub
+# release for the changelog, and the crate goes to the registry.
+#
+# The registry's trusted publishing cannot create a crate that does not
+# exist. The first publish of a name is a manual `cargo publish` with a
+# token. Every release after that runs here.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+# Least privilege at the top; each job widens only what it needs.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with the manifest publishes a version
+      # nobody asked for, and the registry keeps it forever.
+      # A tag is the only trigger, and anyone who can push a tag can
+      # point one at any commit. Requiring the commit to be on main
+      # means a release carries what main carries, and nothing else.
+      - name: Check the tag is on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "tag ${GITHUB_REF_NAME} names a commit that is not on main" >&2
+            exit 1
+          fi
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          manifest="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "$manifest" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml ($manifest)" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+      # Catches a packaging fault before the registry does, when the
+      # version can still change. The exclude list has shipped a crate
+      # that could not build from its own tarball before.
+      - name: Package and build from the tarball
+        run: cargo package --locked
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # A draft until the crate publishes. A release that is visible
+      # while `cargo publish` failed names a version nobody can
+      # install, and a reader has no way to tell which half ran.
+      - name: Open the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+  publish-crate:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      # `checkout` needs contents. A job that lists any permission
+      # sets every other one to none, and a private repository would
+      # then fail the checkout. Public repositories hide that today.
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  finalize:
+    needs: publish-crate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false

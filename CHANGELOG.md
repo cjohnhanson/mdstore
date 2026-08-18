@@ -123,8 +123,11 @@
 ## 0.3.0
 
 Breaking. A store now reads and writes through a capability handle, so
-the operating system refuses a path that leaves the store. A caller
-cannot forget a check, because there is no check to forget.
+a path that leaves the store is refused. A caller cannot forget a
+check, because there is no check to forget. The kernel enforces this
+on Linux and on FreeBSD; elsewhere, macOS included, cap-std resolves
+the path in userspace. See the `confined` module for what each
+platform gives.
 
 ### Breaking changes
 

@@ -1,5 +1,10 @@
 [package]
-name = "mdstore"
+# The registry name. `mdstore` there belongs to an unrelated project,
+# and a registry name is first-come and permanent, so this crate takes
+# a qualified one. `[lib] name` below keeps the import path, so every
+# consumer still writes `use mdstore::…` and only the dependency line
+# changes.
+name = "mdstore-core"
 version = "0.3.6"
 edition = "2024"
 description = "Generic frontmattered markdown document store"
@@ -19,13 +24,16 @@ exclude = [
     ".gaff/",
     ".github/",
     "scripts/",
-    # Shells out to scripts/merge-gate.sh, which the line above drops.
-    "tests/merge_gate_guard.rs",
     "CONTRIBUTING.md",
     "AGENTS.md",
     ".editorconfig",
     "rust-toolchain.toml",
 ]
+
+# The import path stays `mdstore`, so no consumer source changes when
+# the registry name does.
+[lib]
+name = "mdstore"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -74,3 +82,12 @@ optional = true
 [dependencies.sha2]
 version = "0.11.0"
 optional = true
+
+# mdstore ships no binary, so this governs its own release build and
+# the tests that run against one. A dependent crate uses its own
+# profile, not this one. Thin LTO with one codegen unit trades build
+# time for size and speed.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

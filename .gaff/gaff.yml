@@ -1,3 +1,14 @@
+# The reviews a change must pass before it merges. `gaff reviews`
+# prints them and `gaff reviews check` holds them, so no gate
+# hard-codes a name.
+#
+# An absent key means this repo declared no policy, and the check
+# refuses the push. An unknown policy is not an empty one. Write
+# `reviews: []` to require none.
+reviews:
+  - fresh-eyes
+  - mutation
+
 # Repo-level gaff config. Two entries. The commit gate holds formatted
 # code and a clean clippy on pre-commit. The merge gate holds tests,
 # the missouri suite, and a fresh-eyes review note on pre-push, which
@@ -19,13 +30,24 @@ git:
 
 # The CI gate: the same declarations, run by gaff ci.
 # Branch protection on main requires this check, so a sha needs a green
-# gate before main accepts it. The pull_request trigger is load-bearing:
 # a pull request from a fork raises no push event here, so without it
 # the required check never reports and no pull request can merge.
 github:
   - name: gate
+    # A pull request only, on purpose. A squash merge writes a commit
+    # that no note names: a reviewer signs the branch tip, and the
+    # squash creates a different commit afterwards. So a run on `main`
+    # failed after every merge.
+    #
+    # `gaff ci` reads the branch head from the event payload. That is
+    # the commit a reviewer read, and branch protection gates the
+    # merge from there.
+    #
+    # This gives up two things. A push to a branch with no pull
+    # request runs no CI, and the local hook covers only whoever
+    # installed it. Open the pull request as a draft to get the gate
+    # back. Nothing runs on `main` after a merge either.
     on:
-      - push
       - pull_request
     steps:
       - name: fetch review notes
