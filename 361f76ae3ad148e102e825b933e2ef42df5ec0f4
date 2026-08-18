@@ -1,0 +1,14 @@
+A cold reviewer read the release workflow and the containment documentation, and returned SHIP with no blocker.
+
+The containment claim was the substance. The module said the operating system refuses a path leaving the store, which holds on Linux and FreeBSD and not on macOS, where cap-primitives resolves in userspace. The reviewer confirmed the platform split in cap-primitives 4.0.2, src/rustix/fs/mod.rs, and confirmed the new text neither overstates nor understates. It then found the same sentence surviving in CHANGELOG.md, which ships to crates.io, and in one doc comment. Both corrected.
+
+The release now opens a draft and finalizes after the crate publishes, so a failed publish leaves no release naming a version nobody can install.
+
+signoff[fresh-eyes] PASS 361f76a read the release workflow whole and confined.rs against cap-primitives 4.0.2 src/rustix/fs/mod.rs, confirmed the manually::open arm covers macOS, and ran cargo package, cargo build --release, and the full suite at 210 passed
+signoff[mutation] PASS 361f76a the gate's own guards were mutated in gaff, where the check lives, each turning one named test red; here the reviewer instead drove store sync against three declared stores and confirmed one failure never stops another
+
+The tip moved after that review, by one commit that changes the gate's
+trigger. gaff main went red on the squash merge, because a squash
+writes a commit that no note names, so the post-merge run fails every
+time. The gate runs on a pull request only now. The reasoning and the
+trap it avoids are in gaff's tracker as f90z.
