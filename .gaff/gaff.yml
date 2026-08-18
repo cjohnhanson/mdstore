@@ -35,8 +35,20 @@ git:
 # the required check never reports and no pull request can merge.
 github:
   - name: gate
+    # A pull request only, on purpose. A squash merge writes a commit
+    # that no note names: a reviewer signs the branch tip, and the
+    # squash creates a different commit afterwards. So a run on `main`
+    # failed after every merge.
+    #
+    # `gaff ci` reads the branch head from the event payload. That is
+    # the commit a reviewer read, and branch protection gates the
+    # merge from there.
+    #
+    # This gives up two things. A push to a branch with no pull
+    # request runs no CI, and the local hook covers only whoever
+    # installed it. Open the pull request as a draft to get the gate
+    # back. Nothing runs on `main` after a merge either.
     on:
-      - push
       - pull_request
     steps:
       - name: fetch review notes

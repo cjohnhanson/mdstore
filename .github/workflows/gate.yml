@@ -4,7 +4,6 @@
 name: 'gate'
 
 on:
-  push:
   pull_request:
 
 jobs:

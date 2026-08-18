@@ -1,6 +1,8 @@
 #!/bin/sh
-# The merge gate runs on pre-push. Direct push is how these repos
-# merge, so pre-push is the merge check.
+# The merge gate runs on pre-push, and CI runs the same entry on a
+# pull request. `main` is protected and takes no direct push, so the
+# required CI check is what decides a merge. The hook is the local
+# copy of it, and `--no-verify` skips the hook.
 #
 # A push needs passing tests and a review note that names every review
 # .gaff/gaff.yml declares. `gaff reviews check` holds the note
