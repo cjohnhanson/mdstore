@@ -1,0 +1,10 @@
+A cold reviewer read the new commits on this branch and returned SHIP with no blocker.
+
+The gate now runs on a pull request only. A squash merge writes a commit that no note names, so the run on `main` failed after every merge. The reviewer confirmed the trigger fixes it, that branch protection still requires the `gate` context on the pull request head, and that `enforce_admins` closes the admin override. It also confirmed `branches-ignore` would be worse: one branch list renders under every filtered event, so the ignore would land under `pull_request` and filter out every pull request targeting `main`.
+
+Stated on purpose, because the change gives it up: nothing runs on `main` after a merge, and `strict` is off, so two pull requests can each pass and merge into a state neither tested.
+
+Every install instruction in the README was checked against this repository's Cargo.toml and against crates.io.
+
+signoff[fresh-eyes] PASS 7000be3 read the new commits cold, verified both corrected comments against branch protection and the generated workflow, checked every README install claim against Cargo.toml and the registry, and ran fmt, clippy with -D warnings, the full test suite and gaff check --github green
+signoff[mutation] PASS 7000be3 the guards this gate depends on live in gaff and were mutated there one at a time, each turning one named test red, including the detached HEAD arm that every CI run takes and both stdin call sites
