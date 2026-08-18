@@ -30,7 +30,6 @@ git:
 
 # The CI gate: the same declarations, run by gaff ci.
 # Branch protection on main requires this check, so a sha needs a green
-# gate before main accepts it. The pull_request trigger is load-bearing:
 # a pull request from a fork raises no push event here, so without it
 # the required check never reports and no pull request can merge.
 github:
