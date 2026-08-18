@@ -1,6 +1,6 @@
 [package]
 name = "mdstore"
-version = "0.3.6"
+version = "0.4.0"
 edition = "2024"
 description = "Generic frontmattered markdown document store"
 license = "MIT"

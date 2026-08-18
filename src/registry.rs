@@ -17,9 +17,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::store::{SourceLocator, StoreContent, StoreSource};
+use crate::tool::ToolName;
 
-/// The user's registry file.
-pub fn registry_path() -> PathBuf {
+/// The named tool's registry file. A user overriding a URL edits the
+/// directory of the tool they run, for the same reason the user config
+/// does: a library's name does not belong in a config directory.
+///
+/// Resolution here is weaker than `userconfig::config_path`, which
+/// takes no environment channel at all. `MDSTORE_REGISTRY` names this
+/// file outright and answers for every tool, and `XDG_CONFIG_HOME` or
+/// `$HOME` supply the base. A repo can therefore choose which registry
+/// answers, and the registry decides which content a declared URL
+/// resolves to. Filed as zfip.
+pub fn registry_path(tool: ToolName<'_>) -> PathBuf {
     if let Ok(p) = std::env::var("MDSTORE_REGISTRY") {
         return PathBuf::from(p);
     }
@@ -29,7 +39,11 @@ pub fn registry_path() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    base.join("mdstore").join("registry.yml")
+    // `ToolName` has already refused a separator, a parent component and
+    // an absolute name, so this `join` cannot discard the base. Before
+    // that type existed, `tool = "/etc/cron.d"` gave
+    // `/etc/cron.d/registry.yml`.
+    base.join(tool.as_str()).join("registry.yml")
 }
 
 /// One override: a declared source, and where it lives on this machine.
@@ -49,9 +63,10 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Load the registry. A missing file is an empty registry.
-    pub fn load() -> Result<Self> {
-        Self::load_from(&registry_path())
+    /// Load the named tool's registry. A missing file is an empty
+    /// registry.
+    pub fn load(tool: ToolName<'_>) -> Result<Self> {
+        Self::load_from(&registry_path(tool))
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
@@ -145,6 +160,10 @@ mod tests {
     use super::*;
     use crate::store::LocalPaths;
 
+    fn named(tool: &str) -> ToolName<'_> {
+        ToolName::new(tool).expect("the test tool name must be one plain component")
+    }
+
     fn tempdir(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
             "mdstore-reg-{}-{name}-{:?}",
@@ -154,6 +173,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn each_tool_owns_its_own_registry_path() {
+        // No environment is set or read here beyond what registry_path
+        // already reads: two names through one call must differ, and
+        // each must end in its own directory. A tool argument that the
+        // body ignores collapses both, whatever the base resolves to.
+        let a = registry_path(named("tisket"));
+        let b = registry_path(named("zettel"));
+
+        // MDSTORE_REGISTRY answers for every tool by design, so the
+        // per-tool assertions cannot hold under it. Assert that
+        // documented behavior instead of skipping: a silent skip once
+        // reported ok with the guarded bug live.
+        if let Some(forced) = std::env::var_os("MDSTORE_REGISTRY") {
+            assert_eq!(a, PathBuf::from(&forced));
+            assert_eq!(b, PathBuf::from(&forced));
+            return;
+        }
+
+        assert_ne!(a, b, "two tools must never share a registry file");
+        assert!(a.ends_with("tisket/registry.yml"), "{}", a.display());
+        assert!(b.ends_with("zettel/registry.yml"), "{}", b.display());
+        for tool in ["tisket", "zettel", "almanac"] {
+            let p = registry_path(named(tool));
+            // Whole-string, not ends_with. The base is environment
+            // dependent, so there is no component to anchor against,
+            // and a reintroduced prefix keeps the tail intact.
+            assert!(
+                !p.to_string_lossy().contains("mdstore"),
+                "{tool} reads the library's directory: {}",
+                p.display()
+            );
+        }
     }
 
     #[test]

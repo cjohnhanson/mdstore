@@ -50,7 +50,14 @@ pub struct Resolved {
 pub struct Vocabulary<'a> {
     pub marker: &'a str,
     pub noun: &'a str,
-    pub tool: &'a str,
+    /// The same type the config path takes.
+    ///
+    /// This unifies the type, not the value. A consumer can still build
+    /// a vocabulary with one name and load its config with another, and
+    /// nothing here catches that. What changed is the message: it names
+    /// the file the config path builds, where it once named
+    /// `~/.config/mdstore/config.yml` no matter which tool ran.
+    pub tool: crate::tool::ToolName<'a>,
 }
 
 /// Resolve the root for one command.
@@ -117,7 +124,7 @@ pub fn resolve_root(
         ))),
         (_, None) => Err(Error::InvalidStore(format!(
             "not a {tool} {noun}: no {marker} at or above {}, and no root {noun} is set in \
-             ~/.config/mdstore/config.yml (set one: {tool} store root <path>)",
+             ~/.config/{tool}/config.yml (set one: {tool} store root <path>)",
             cwd.display()
         ))),
     }
@@ -130,7 +137,7 @@ fn require_root_store(root: &Path, vocab: Vocabulary<'_>) -> Result<()> {
     let Vocabulary { marker, noun, tool } = vocab;
     if !has_marker(root, marker) {
         return Err(Error::InvalidStore(format!(
-            "the root {noun} in ~/.config/mdstore/config.yml ({}) has no {marker}; run \
+            "the root {noun} in ~/.config/{tool}/config.yml ({}) has no {marker}; run \
              `{tool} init` there, or set a new path with `{tool} store root <path>`",
             root.display()
         )));
@@ -176,10 +183,15 @@ fn owned_by_caller(_dir: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // The shape every consumer uses: one const, rejected at compile time
+    // if the name is not one plain path component.
     const V: Vocabulary<'static> = Vocabulary {
         marker: "tool.yml",
         noun: "tracker",
-        tool: "tool",
+        tool: match crate::tool::ToolName::new("tool") {
+            Some(t) => t,
+            None => panic!("the tool name must be one plain path component"),
+        },
     };
 
     fn scratch(tag: &str) -> PathBuf {
@@ -270,6 +282,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("store root <path>"), "{err}");
+        // The path must name the calling tool's directory. This message
+        // is the only place a user learns which file to edit, so a
+        // regression to the library's directory sends them to a file
+        // nothing reads.
+        assert!(err.contains("~/.config/tool/config.yml"), "{err}");
+        assert!(!err.contains("config/mdstore"), "{err}");
         let err = resolve_root(&d, None, true, Intent::Read, &cfg(None), V)
             .unwrap_err()
             .to_string();
@@ -282,5 +300,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has no tool.yml"), "{err}");
+        assert!(err.contains("~/.config/tool/config.yml"), "{err}");
+        assert!(!err.contains("config/mdstore"), "{err}");
     }
 }

@@ -1,19 +1,22 @@
-//! The user-level config: `~/.config/mdstore/config.yml`.
+//! The user-level config: `~/.config/<tool>/config.yml`.
 //!
-//! One file, shared by every consumer, so the rule an agent must
-//! predict is identical across tools. The path is fixed: no
-//! `XDG_CONFIG_HOME`, no `MDSTORE_CONFIG`, and no `$HOME` — the home
-//! directory comes from the passwd database. Every environment channel
-//! is repo-settable (direnv, mise, a CI wrapper), and this file names
-//! where a write can land, so it is security config, held to gaff's
-//! standard. Tests substitute the file through an explicit flag on the
-//! consumer CLI, never through the environment.
+//! Each consumer tool owns its own file, named by the tool the user
+//! runs, never by this library — a library is an implementation
+//! detail, and its name does not belong in a user's config directory.
+//! The path shape is fixed: no `XDG_CONFIG_HOME`, no environment
+//! override, and no `$HOME` — the home directory comes from the passwd
+//! database. Every environment channel is repo-settable (direnv, mise,
+//! a CI wrapper), and this file names where a write can land, so it is
+//! security config, held to gaff's standard. Tests substitute the file
+//! through an explicit flag on the consumer CLI, never through the
+//! environment.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::tool::ToolName;
 
 /// The parsed user config. An absent file is the one benign absence:
 /// it means no fallback, which is exactly the behavior before this
@@ -60,19 +63,44 @@ pub fn passwd_home() -> Option<PathBuf> {
     }
 }
 
-/// The fixed path of the user config.
+/// The fixed path of the named tool's user config.
 #[must_use]
-pub fn config_path() -> Option<PathBuf> {
-    passwd_home().map(|h| h.join(".config/mdstore/config.yml"))
+pub fn config_path(tool: ToolName<'_>) -> Option<PathBuf> {
+    passwd_home().map(|h| config_path_in(&h, tool))
+}
+
+/// The same path, against an explicit home.
+///
+/// The home is a parameter so a test can watch which directory the read
+/// and the write actually reach. Without it, only `config_path` is
+/// testable, and a wrapper routing to the wrong tool goes unseen: both
+/// `load` and `save_root` once did, under mutation, with the suite
+/// green.
+fn config_path_in(home: &Path, tool: ToolName<'_>) -> PathBuf {
+    // One format string opening with a literal, not a `join` per
+    // component. The literal is the second layer: `join` discards the
+    // base for an absolute component, so a per-component form turns
+    // `tool = "/etc"` into `/etc/config.yml`, while this form contains
+    // it as `~/.config//etc/config.yml`. `ToolName` refuses that name
+    // first, so the two agree today. They disagree exactly in the case
+    // where the validation has failed, which is when a second layer is
+    // the only thing left.
+    home.join(format!(".config/{tool}/config.yml"))
 }
 
 impl UserConfig {
-    /// Load the user config from its fixed path. A missing file is the
-    /// default (no fallback); anything else wrong with the file is an
-    /// error, never a silent downgrade to "unconfigured".
-    pub fn load() -> Result<Self> {
-        match config_path() {
-            Some(p) => Self::load_from(&p),
+    /// Load the named tool's user config from its fixed path. A
+    /// missing file is the default (no fallback); anything else wrong
+    /// with the file is an error, never a silent downgrade to
+    /// "unconfigured".
+    pub fn load(tool: ToolName<'_>) -> Result<Self> {
+        Self::load_in(passwd_home().as_deref(), tool)
+    }
+
+    /// `load`, against an explicit home. See `config_path_in`.
+    fn load_in(home: Option<&Path>, tool: ToolName<'_>) -> Result<Self> {
+        match home {
+            Some(h) => Self::load_from(&config_path_in(h, tool)),
             None => Ok(Self::default()),
         }
     }
@@ -122,13 +150,19 @@ impl UserConfig {
         Ok(cfg)
     }
 
-    /// Write `root_store` to the fixed path, atomically.
-    pub fn save_root(root: &Path) -> Result<PathBuf> {
-        let Some(path) = config_path() else {
+    /// Write `root_store` to the named tool's fixed path, atomically.
+    pub fn save_root(tool: ToolName<'_>, root: &Path) -> Result<PathBuf> {
+        Self::save_root_in(passwd_home().as_deref(), tool, root)
+    }
+
+    /// `save_root`, against an explicit home. See `config_path_in`.
+    fn save_root_in(home: Option<&Path>, tool: ToolName<'_>, root: &Path) -> Result<PathBuf> {
+        let Some(h) = home else {
             return Err(Error::InvalidStore(
                 "no home directory resolves from the passwd database".to_string(),
             ));
         };
+        let path = config_path_in(h, tool);
         Self::save_root_to(&path, root)?;
         Ok(path)
     }
@@ -165,6 +199,10 @@ fn expand_home(p: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn named(tool: &str) -> ToolName<'_> {
+        ToolName::new(tool).expect("the test tool name must be one plain component")
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mdstore-ucfg-{tag}-{}", std::process::id()));
@@ -218,6 +256,102 @@ mod tests {
     #[test]
     fn the_default_format_matches_the_serde_default() {
         assert_eq!(UserConfig::default().format, 1);
+    }
+
+    #[test]
+    fn each_tool_owns_its_own_config_path() {
+        let a = config_path(named("tisket")).unwrap();
+        let b = config_path(named("zettel")).unwrap();
+        assert_ne!(a, b, "two tools must never share a config file");
+        assert!(a.ends_with(".config/tisket/config.yml"), "{}", a.display());
+        assert!(b.ends_with(".config/zettel/config.yml"), "{}", b.display());
+
+        // The suffix checks cover tisket and zettel only. A body that
+        // special-cases a third tool back to this library's directory
+        // passes every assertion above.
+        let library = passwd_home().unwrap().join(".config").join("mdstore");
+        for tool in ["tisket", "zettel", "almanac"] {
+            let p = config_path(named(tool)).unwrap();
+            assert!(
+                !p.starts_with(&library),
+                "{tool} reads the library's directory: {}",
+                p.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_read_and_the_write_route_through_the_tools_directory() {
+        // A decoy in the library's old directory, and the real file in
+        // the tool's. Reading the decoy means the wrapper routed by the
+        // library's name. config_path alone cannot catch that, because
+        // the wrappers each choose the name they pass.
+        let home = scratch("routing");
+        let decoy = home.join(".config").join("mdstore");
+        let real = home.join(".config").join("tisket");
+        std::fs::create_dir_all(&decoy).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(decoy.join("config.yml"), "root_store: /decoy\n").unwrap();
+        std::fs::write(real.join("config.yml"), "root_store: /real\n").unwrap();
+
+        let cfg = UserConfig::load_in(Some(&home), named("tisket")).unwrap();
+        assert_eq!(
+            cfg.root_store.as_deref(),
+            Some(Path::new("/real")),
+            "load read the wrong tool's file"
+        );
+
+        // The write lands in the tool's directory, and the decoy keeps
+        // its bytes.
+        let store = home.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let written = UserConfig::save_root_in(Some(&home), named("zettel"), &store).unwrap();
+        // Equality against the home that was handed in, not a suffix. A
+        // suffix holds for any home at all, so an inner function that
+        // reaches for passwd_home() instead of its parameter passes the
+        // test while writing into the real user's config directory.
+        assert_eq!(
+            written,
+            home.join(".config").join("zettel").join("config.yml"),
+            "the write ignored the home it was given"
+        );
+        // An unresolvable home is the default and never an error. The
+        // doc comment on `load` has always said so, and this seam is the
+        // only way to assert it.
+        let cfg = UserConfig::load_in(None, named("tisket")).unwrap();
+        assert_eq!(cfg.root_store, None);
+
+        let after = std::fs::read_to_string(decoy.join("config.yml")).unwrap();
+        assert_eq!(after, "root_store: /decoy\n", "the write hit the decoy");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_tool_directory_round_trips() {
+        // A dotfile manager farms `~/.config`, so `.config/<tool>` is
+        // often a symlink. `create_dir_all` accepts it and the rename
+        // resolves through it, so the physical file sits in the link
+        // target. The reported path still reads back, which is the
+        // property that matters, and this test holds it.
+        let home = scratch("symlink");
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        std::os::unix::fs::symlink(&outside, home.join(".config").join("zettel")).unwrap();
+
+        let store = home.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        // This pins symlink transparency on purpose. A write that
+        // refused a symlinked parent would fail the unwrap below, and
+        // that is the point: bzs1 closed as not a defect, so following
+        // the link is the wanted behavior rather than a tolerated one.
+        let written = UserConfig::save_root_in(Some(&home), named("zettel"), &store).unwrap();
+        // The reported path resolves to the bytes: a read of it returns
+        // what the write put there. The physical file sits in the link
+        // target, which is what a dotfile manager farms `~/.config` for.
+        let round_trip = UserConfig::load_from(&written).unwrap();
+        assert_eq!(round_trip.root_store.as_deref(), Some(store.as_path()));
+        assert!(outside.join("config.yml").is_file());
     }
 
     #[test]
