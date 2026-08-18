@@ -13,17 +13,25 @@ from a single vantage point.
 
 ## Install
 
+From the first published release onward:
+
 ```sh
-cargo add --git https://github.com/cjohnhanson/mdstore mdstore
+cargo add mdstore-core --rename mdstore
 ```
 
 Or in `Cargo.toml`:
 
 ```toml
 [dependencies]
-mdstore = { git = "https://github.com/cjohnhanson/mdstore" }
+mdstore = { version = "0.3", package = "mdstore-core" }
 serde = { version = "1", features = ["derive"] }
 ```
+
+The crate is `mdstore-core` and the import path is `mdstore`.
+`mdstore` on crates.io belongs to an unrelated project, and a registry
+name is first-come and permanent, so this crate took a qualified one.
+`[lib] name` keeps the import path, so every `use mdstore::…` reads the
+same and only the dependency line carries the registry name.
 
 ## Documents
 
