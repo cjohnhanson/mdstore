@@ -140,7 +140,7 @@ impl StoreDir {
     /// The name of the store root itself.
     ///
     /// An empty relative path names the root to every caller, but the
-    /// operating system refuses it. Reading it as "." made a scan of
+    /// resolver refuses it. Reading it as "." made a scan of
     /// the root return no documents, and the NotFound arm hid that as
     /// an empty store.
     fn at(rel: &str) -> &str {

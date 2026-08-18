@@ -83,9 +83,10 @@ optional = true
 version = "0.11.0"
 optional = true
 
-# A released binary carries no debug symbols, and a user installing a
-# CLI never reads them. Thin LTO with one codegen unit trades build
-# time for size and speed. A release builds once and installs often.
+# mdstore ships no binary, so this governs its own release build and
+# the tests that run against one. A dependent crate uses its own
+# profile, not this one. Thin LTO with one codegen unit trades build
+# time for size and speed.
 [profile.release]
 strip = "symbols"
 lto = "thin"

@@ -89,6 +89,10 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     permissions:
+      # `checkout` needs contents. A job that lists any permission
+      # sets every other one to none, and a private repository would
+      # then fail the checkout. Public repositories hide that today.
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
