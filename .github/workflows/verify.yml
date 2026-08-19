@@ -17,8 +17,8 @@ jobs:
           'components': 'clippy, rustfmt'
       - name: 'rust cache'
         uses: 'Swatinem/rust-cache@v2'
-      - name: 'install missouri'
-        uses: 'cjohnhanson/missouri@main'
+      - name: 'gaff'
+        uses: 'cjohnhanson/gaff@main'
       - name: 'formatting'
         run: |
           cargo fmt --all --check
