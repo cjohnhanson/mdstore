@@ -66,9 +66,10 @@ default = []
 # The MCP scaffold. Off by default: a consumer that only builds a CLI
 # should not pull in a server stack.
 mcp = ["dep:serde_json", "dep:sha2"]
-# A store rendered as a book. Off by default: mdbook carries
-# handlebars, elasticlunr and tokio, and a consumer that only reads
-# documents should not pay for them.
+# A store rendered as a book. Off by default: mdbook adds 57 packages,
+# handlebars and elasticlunr among them, and a consumer that only reads
+# documents should not pay for them. tokio is not one of the 57; reqwest
+# and gix already carry it with no feature at all.
 book = ["dep:mdbook-core", "dep:mdbook-html", "dep:mdbook-renderer"]
 
 [dependencies.serde_json]
