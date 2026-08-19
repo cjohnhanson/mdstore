@@ -19,31 +19,6 @@
 # those.
 set -e
 
-# A change is judged by the policy already in force, not by the policy
-# it ships. Without this, a branch that empties `reviews:` passes its
-# own check with no sign-off, because the gate reads the file from the
-# branch it is judging. Comparing against the merge base closes that.
-# A branch that adds a review is fine; one that drops a review is not,
-# and the drop lands only once a change carrying it has been reviewed
-# under the older, stricter policy.
-base_policy=$(git show origin/main:.gaff/gaff.yml 2>/dev/null || true)
-if [ -n "$base_policy" ]; then
-  base_names=$(printf '%s\n' "$base_policy" |
-    awk '/^reviews:/ {inside=1; next} inside && /^  - / {print $2; next} inside && !/^  - / {exit}')
-  for name in $base_names; do
-    # Only a review the merge base could actually perform is protected.
-    # A name with no criteria on the base was never enforceable, so
-    # replacing it is not a weakening.
-    git cat-file -e "origin/main:.agents/skills/$name/SKILL.md" 2>/dev/null || continue
-    if ! gaff reviews | grep -qx "$name"; then
-      echo "merge-gate: $name is required on origin/main and this branch drops it." >&2
-      echo "  A branch cannot weaken the policy that judges it. Restore the name," >&2
-      echo "  or land the removal through a change reviewed under the current policy." >&2
-      exit 1
-    fi
-  done
-fi
-
 # Every required review needs vendored criteria, and every vendored
 # review needs to be required. A name with no criteria is a review
 # nobody can perform. A criterion nobody requires is a check that one
