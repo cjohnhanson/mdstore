@@ -1,4 +1,6 @@
 pub mod blob;
+#[cfg(feature = "book")]
+pub mod book;
 pub mod confined;
 pub mod document;
 pub mod error;
