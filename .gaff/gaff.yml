@@ -1,3 +1,14 @@
+# The reviews a change must pass before it merges. Each name is a skill
+# vendored into .agents/skills by almanac, and each is read by one
+# independent agent that sees the change and nothing else. signoff-driver
+# states the procedure and when to stop.
+reviews:
+  - review-tests
+  - review-docs
+  - review-code
+  - review-deps
+  - review-usability
+
 # Repo-level gaff config. Two entries. The commit gate holds formatted
 # code and a clean clippy on pre-commit. The merge gate holds tests,
 # the missouri suite, and a fresh-eyes review note on pre-push, which

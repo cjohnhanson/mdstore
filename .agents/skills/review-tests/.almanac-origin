@@ -1,0 +1,5 @@
+managed-by: almanac
+name: review-tests
+source: github:cjohnhanson/skills
+rev: 031c5cf4962595a7517a1f48e1a16aaad564e88d
+sha256: sha256-v1:3a458c3d32c07eef23e16fcfcd8152b17e1c29e4b0a87646440a774c2a9ba6f0

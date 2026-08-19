@@ -1,0 +1,5 @@
+managed-by: almanac
+name: review-deps
+source: github:cjohnhanson/skills
+rev: 031c5cf4962595a7517a1f48e1a16aaad564e88d
+sha256: sha256-v1:390b89d3795c278a49b2d05995922599d5ced91fc003300d8dff8b24d9c35bda

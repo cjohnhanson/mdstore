@@ -1,0 +1,5 @@
+managed-by: almanac
+name: signoff-driver
+source: github:cjohnhanson/skills
+rev: 031c5cf4962595a7517a1f48e1a16aaad564e88d
+sha256: sha256-v1:f2ee9cd172aa94d9990465def7cb13d6b0b4a59740d39a809a89deed95029e75

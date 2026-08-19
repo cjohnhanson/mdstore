@@ -1,0 +1,5 @@
+managed-by: almanac
+name: review-code
+source: github:cjohnhanson/skills
+rev: 031c5cf4962595a7517a1f48e1a16aaad564e88d
+sha256: sha256-v1:10a8115a63cc162273d469d8748bcb70a02b09436d889325f1b6e6614cd0a712
