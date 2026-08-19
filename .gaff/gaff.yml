@@ -11,7 +11,8 @@ reviews:
 
 # Repo-level gaff config. Two entries. The commit gate holds formatted
 # code and a clean clippy on pre-commit. The merge gate holds tests,
-# the missouri suite, and a fresh-eyes review note on pre-push, which
+# the missouri suite, and a sign-off for every declared review on
+# pre-push, which
 # is the merge check in a repo that merges by direct push. Installed by
 # `gaff init --git`.
 git:

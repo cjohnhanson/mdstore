@@ -1,10 +1,10 @@
 #!/bin/sh
 # The merge gate. These repos merge by direct push, so this pre-push
 # hook is the merge check. A push needs green tests, a green missouri
-# suite, and a recorded fresh-eyes review.
+# suite, and a sign-off for every review .gaff/gaff.yml declares.
 #
 # The review record is a git note on the pushed tip:
-#   git notes --ref=reviews add -m "fresh-eyes: <who> <scope>" <sha>
+#   git notes --ref=reviews add -m 'signoff[<review>] PASS <sha> <evidence>' <sha>
 # Write a note only after an independent reviewer has read the change
 # and its test coverage. A note without a review makes the gate false.
 #
@@ -96,43 +96,32 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_EVENT_NAME:-}" = "pull_requ
     echo "merge-gate: pull request. Reading the review note on $head_sha."
 fi
 
-# Each pushed tip needs a review note. For an annotated tag, the note
-# may sit on the commit the tag peels to. A branch deletion merges
-# nothing, so it is exempt. The notes-ref exemption keys on the remote
-# ref: a push of the reviews ref shares a review record, but a notes
-# object pushed at a branch lands on that branch, so that push is
-# gated.
-zero=0000000000000000000000000000000000000000
-printf '%s\n' "$gate_refs" | while read -r _local_ref local_sha remote_ref _remote_sha; do
-    [ -z "$local_sha" ] && continue
-    [ "$local_sha" = "$zero" ] && continue
-    case "$remote_ref" in refs/notes/*) continue ;; esac
-    commit_sha=$(git rev-parse --quiet --verify "$local_sha^{commit}" || echo "$local_sha")
-    # `|| true`, or set -e ends the loop's subshell on a missing note
-    # before either message prints, and the person who forgot the note
-    # gets 'failed to push some refs' and nothing else.
-    note=$(git notes --ref=reviews show "$commit_sha" 2>/dev/null || true)
-    if ! printf '%s' "$note" | grep -q "fresh-eyes"; then
-        echo "merge-gate: no fresh-eyes review note on $commit_sha (pushing to $remote_ref)." >&2
-        echo "  A reviewer who did not write the change reads it and its test" >&2
-        echo "  coverage first. Then record it:" >&2
-        echo "    git notes --ref=reviews add -m 'fresh-eyes: <reviewer> <scope>' $commit_sha" >&2
-        exit 1
-    fi
-    # A review that read the change is not enough. Every regression that
-    # reached a reviewed tip on 2026-08-16 shipped with green tests and a
-    # fresh-eyes note; every one was caught only when the reviewer put
-    # the bug back and watched a named test go red. A note that does not
-    # say a mutation was applied describes a reading, not a verification.
-    if ! printf '%s' "$note" | grep -qi "mutation"; then
-        echo "merge-gate: the review note on $commit_sha does not mention a mutation." >&2
-        echo "  A test for a guard (a new if, a new early return, a new type check)" >&2
-        echo "  is verified by removing the guard and seeing the test go red. Say" >&2
-        echo "  in the note which mutations were applied and which test caught" >&2
-        echo "  each. A note that only says the change was read is not a review" >&2
-        echo "  of its tests. Amend the note in place:" >&2
-        echo "    git notes --ref=reviews add -f -m 'fresh-eyes: <reviewer> <scope>. Mutation: <what> -> <test> red' $commit_sha" >&2
-        exit 1
-    fi
+# `gaff reviews check` holds the note requirement, reading the names
+# .gaff/gaff.yml declares, so no review name appears here. It carries
+# the exemptions too: a branch deletion merges nothing, a push of the
+# notes ref shares a record, and an annotated tag peels to its commit.
+# Every required review needs vendored criteria, and every vendored
+# review needs to be required. A name with no criteria is a review
+# nobody can perform. A criterion nobody requires is a check that one
+# edit dropped. Checking both directions is what stops that edit.
+required=$(gaff reviews)
+for name in $required; do
+  if [ ! -f ".agents/skills/$name/SKILL.md" ]; then
+    echo "merge-gate: $name is required and has no criteria in .agents/skills." >&2
+    echo "  Vendor it: almanac add github:cjohnhanson/skills --path skills/$name --name $name --accept" >&2
+    exit 1
+  fi
 done
+for dir in .agents/skills/review-*/; do
+  [ -d "$dir" ] || continue
+  name=${dir#.agents/skills/}
+  name=${name%/}
+  if ! printf '%s\n' "$required" | grep -qx "$name"; then
+    echo "merge-gate: $name is vendored and required by nothing." >&2
+    echo "  Name it under reviews: in .gaff/gaff.yml, or remove it." >&2
+    exit 1
+  fi
+done
+
+printf '%s\n' "$gate_refs" | gaff reviews check
 echo "merge-gate: ok"

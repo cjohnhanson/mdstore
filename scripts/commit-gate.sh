@@ -1,7 +1,7 @@
 #!/bin/sh
 # The commit gate. A commit needs formatted code and a clean clippy:
 # zero warnings, zero errors. The push gate then holds tests, the
-# missouri suite, and the fresh-eyes review.
+# missouri suite, and a sign-off for every declared review.
 set -e
 
 # The checks read the working tree. When the index and the tree differ
