@@ -62,7 +62,7 @@ fn a_local_shell_cannot_skip_the_note_check() {
     let (code, out) = run_gate(NOTELESS, &[("GITHUB_EVENT_NAME", "pull_request")], None);
     assert_ne!(code, 0, "a local shell skipped the note check: {out}");
     assert!(
-        out.contains("no fresh-eyes review note"),
+        out.contains("no review note on"),
         "expected the note refusal, got: {out}"
     );
 }
@@ -104,7 +104,7 @@ fn a_pull_request_refuses_a_head_with_no_note() {
     );
     assert_ne!(code, 0, "a note-less pull request head passed: {out}");
     assert!(
-        out.contains("no fresh-eyes review note"),
+        out.contains("no review note on"),
         "expected the note refusal, got: {out}"
     );
 }
