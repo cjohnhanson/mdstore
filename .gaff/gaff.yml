@@ -36,8 +36,11 @@ git:
 # the required check never reports and no pull request can merge.
 github:
   - name: gate
+    # A pull request only. A squash merge writes a commit no reviewer
+    # saw, so a run on main asked for a note that cannot exist and
+    # failed after every merge. `gaff ci` reads the branch head from
+    # the event payload, which is the commit a reviewer read.
     on:
-      - push
       - pull_request
     steps:
       - name: fetch review notes
@@ -50,3 +53,28 @@ github:
         uses: Swatinem/rust-cache@v2
       - name: gaff
         uses: cjohnhanson/gaff@main
+
+  # A push still runs the tests and the linters, so a merge that breaks
+  # main is visible. The review check is absent on purpose: it belongs
+  # on the pull request head, where the note names the commit under
+  # review.
+  - name: verify
+    on:
+      - push
+    steps:
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: install missouri
+        uses: cjohnhanson/missouri@main
+      - name: formatting
+        command: [cargo, fmt, --all, --check]
+      - name: clippy
+        command: [cargo, clippy, --workspace, --all-targets, --all-features, --, -D, warnings]
+      - name: tests
+        command: [cargo, test, --workspace, --all-features]
+      - name: missouri suite
+        command: [sh, -c, "[ -d tests/missouri ] || exit 0; cd tests/missouri && missouri run"]
