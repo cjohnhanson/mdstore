@@ -19,6 +19,55 @@
 # those.
 set -e
 
+# A change is judged by the policy already in force, not by the policy
+# it ships. Without this, a branch that empties `reviews:` passes its
+# own check with no sign-off, because the gate reads the file from the
+# branch it is judging. Comparing against the merge base closes that.
+# A branch that adds a review is fine; one that drops a review is not,
+# and the drop lands only once a change carrying it has been reviewed
+# under the older, stricter policy.
+base_policy=$(git show origin/main:.gaff/gaff.yml 2>/dev/null || true)
+if [ -n "$base_policy" ]; then
+  base_names=$(printf '%s\n' "$base_policy" |
+    awk '/^reviews:/ {inside=1; next} inside && /^  - / {print $2; next} inside && !/^  - / {exit}')
+  for name in $base_names; do
+    # Only a review the merge base could actually perform is protected.
+    # A name with no criteria on the base was never enforceable, so
+    # replacing it is not a weakening.
+    git cat-file -e "origin/main:.agents/skills/$name/SKILL.md" 2>/dev/null || continue
+    if ! gaff reviews | grep -qx "$name"; then
+      echo "merge-gate: $name is required on origin/main and this branch drops it." >&2
+      echo "  A branch cannot weaken the policy that judges it. Restore the name," >&2
+      echo "  or land the removal through a change reviewed under the current policy." >&2
+      exit 1
+    fi
+  done
+fi
+
+# Every required review needs vendored criteria, and every vendored
+# review needs to be required. A name with no criteria is a review
+# nobody can perform. A criterion nobody requires is a check that one
+# edit dropped. Checking both directions is what stops that edit.
+required=$(gaff reviews)
+for name in $required; do
+  if [ ! -f ".agents/skills/$name/SKILL.md" ]; then
+    echo "merge-gate: $name is required and has no criteria in .agents/skills." >&2
+    echo "  Vendor it: almanac add github:cjohnhanson/skills --path skills/$name --name $name --accept" >&2
+    exit 1
+  fi
+done
+for dir in .agents/skills/review-*/; do
+  [ -d "$dir" ] || continue
+  name=${dir#.agents/skills/}
+  name=${name%/}
+  if ! printf '%s\n' "$required" | grep -qx "$name"; then
+    echo "merge-gate: $name is vendored and required by nothing." >&2
+    echo "  Name it under reviews: in .gaff/gaff.yml, or remove it." >&2
+    exit 1
+  fi
+done
+
+
 # git sends the ref list on stdin. The first reader spends the stream.
 # Capture it before any other program can read it. If a test runner
 # read stdin first, the loop below would see EOF and check nothing.
@@ -100,28 +149,5 @@ fi
 # .gaff/gaff.yml declares, so no review name appears here. It carries
 # the exemptions too: a branch deletion merges nothing, a push of the
 # notes ref shares a record, and an annotated tag peels to its commit.
-# Every required review needs vendored criteria, and every vendored
-# review needs to be required. A name with no criteria is a review
-# nobody can perform. A criterion nobody requires is a check that one
-# edit dropped. Checking both directions is what stops that edit.
-required=$(gaff reviews)
-for name in $required; do
-  if [ ! -f ".agents/skills/$name/SKILL.md" ]; then
-    echo "merge-gate: $name is required and has no criteria in .agents/skills." >&2
-    echo "  Vendor it: almanac add github:cjohnhanson/skills --path skills/$name --name $name --accept" >&2
-    exit 1
-  fi
-done
-for dir in .agents/skills/review-*/; do
-  [ -d "$dir" ] || continue
-  name=${dir#.agents/skills/}
-  name=${name%/}
-  if ! printf '%s\n' "$required" | grep -qx "$name"; then
-    echo "merge-gate: $name is vendored and required by nothing." >&2
-    echo "  Name it under reviews: in .gaff/gaff.yml, or remove it." >&2
-    exit 1
-  fi
-done
-
 printf '%s\n' "$gate_refs" | gaff reviews check
 echo "merge-gate: ok"
