@@ -489,3 +489,110 @@ mod store {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+#[test]
+fn an_id_that_climbs_out_writes_nothing_outside_the_destination() {
+    // The refusal in chapter_of is the only thing between a hostile id
+    // and a file beside the destination. Both call sites survived their
+    // guard's deletion with the suite green, so this asserts the effect
+    // rather than the predicate.
+    let base = scratch("escape-base");
+    let dest = base.join("site");
+    std::fs::create_dir_all(&base).unwrap();
+
+    let good = chapter_of("5jls", &doc("A page.")).expect("a plain id");
+    let book = Book::new_with_items(vec![BookItem::Chapter(good)]);
+    // A climbing id must not become a chapter at all.
+    assert!(chapter_of("../escaped", &doc("Hostile.")).is_none());
+    let d = Doc {
+        title: "An issue",
+        body: "",
+        rows: Vec::new(),
+        group: None,
+        sub: vec![("Scratch", "text")],
+    };
+    assert!(
+        chapter_of("../escaped", &d).is_none(),
+        "a climbing id produced a chapter with sub-pages"
+    );
+
+    render_html(book, "A book", &dest).unwrap();
+    let beside: Vec<String> = std::fs::read_dir(&base)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "site")
+        .collect();
+    assert!(beside.is_empty(), "the render wrote outside: {beside:?}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_planted_marker_does_not_license_deleting_a_directory() {
+    // A marker was once enough on its own. One file licensed emptying
+    // everything beside it, including a .git directory, because mdbook
+    // exempts no dotfile from the delete.
+    let dir = scratch("planted");
+    std::fs::create_dir_all(dir.join(".git/objects")).unwrap();
+    std::fs::write(dir.join(".git/objects/o"), "an object").unwrap();
+    std::fs::write(dir.join("CNAME"), "notes.example.com").unwrap();
+    std::fs::write(dir.join("thesis.md"), "a person's work").unwrap();
+    std::fs::write(dir.join(MARKER), "written by mdstore\n").unwrap();
+
+    let book = Book::new_with_items(vec![BookItem::Chapter(
+        chapter_of("5jls", &doc("A page.")).unwrap(),
+    )]);
+    let err = render_html(book, "A book", &dir).expect_err("a forged marker is refused");
+    assert!(err.to_string().contains("did not write"), "{err}");
+    assert!(dir.join(".git/objects/o").is_file(), "the git object went");
+    assert!(dir.join("CNAME").is_file(), "the CNAME went");
+    assert!(dir.join("thesis.md").is_file(), "the thesis went");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_added_after_a_render_stops_the_next_one() {
+    // The ordinary way to publish this output is to render, then set up
+    // a repository in the destination. That must not arm a deletion.
+    let dir = scratch("added");
+    let book = || {
+        Book::new_with_items(vec![BookItem::Chapter(
+            chapter_of("5jls", &doc("A page.")).unwrap(),
+        )])
+    };
+    render_html(book(), "A book", &dir).unwrap();
+    std::fs::write(dir.join("CNAME"), "notes.example.com").unwrap();
+
+    let err = render_html(book(), "A book", &dir).expect_err("an added file is refused");
+    assert!(
+        err.to_string().contains("CNAME"),
+        "the refusal names it: {err}"
+    );
+    assert!(dir.join("CNAME").is_file(), "the CNAME went");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_id_holding_a_delimiter_or_a_url_character_has_no_page() {
+    // Each of these was admitted by a denylist. A `>` closes the angle
+    // brackets a destination is written with, and `#` and `?` are read
+    // by a browser as a fragment and a query while the file keeps them.
+    for bad in ["a>b", "a<b", "a#b", "a?b", "a\tb", "a b", "a%b", "a&b"] {
+        assert!(page_path(bad).is_none(), "{bad:?} produced a page");
+    }
+    // The set an id may hold.
+    for good in ["5jls", "a-b", "a_b", "a.b", "A1"] {
+        assert!(page_path(good).is_some(), "{good:?} was refused");
+    }
+}
+
+#[test]
+fn a_stray_backtick_does_not_swallow_a_later_reference() {
+    // An unmatched backtick is literal text in CommonMark. Treating it
+    // as an opener lost every reference after it on the line.
+    let out = rewrite_links("the ` char and [[5jls]]\n");
+    assert!(
+        out.contains("[5jls](<5jls.md>)"),
+        "the link was lost: {out}"
+    );
+}

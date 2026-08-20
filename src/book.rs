@@ -61,18 +61,21 @@ pub trait Chaptered {
 
 /// True when `id` can become a page path and a link destination.
 ///
-/// [`crate::store::is_plain_stem`] carries most of it, because an id
-/// becoming a file path is the reason that predicate exists. Three more
-/// rules apply here, and each one is a link that would otherwise break:
-/// a space cannot appear in a bare markdown destination, a `:` reads as
-/// a store alias, and a parenthesis ends a destination.
+/// An allowlist, and deliberately so. A denylist grew by one character
+/// per defect and still admitted `>`, which closes the angle brackets a
+/// destination is written with, and `#` and `?`, which a browser reads
+/// as a fragment and a query while the file on disk keeps them. The set
+/// permitted here is what the ids these tools mint already look like.
+///
+/// [`crate::store::is_plain_stem`] still runs first, because an id
+/// becoming a file path is the reason that predicate exists, and it
+/// carries the leading-dot and separator rules.
 #[must_use]
 pub fn is_page_id(id: &str) -> bool {
     crate::store::is_plain_stem(id)
-        && !id.contains(' ')
-        && !id.contains(':')
-        && !id.contains('(')
-        && !id.contains(')')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// The page path of a document: its id, flat, always.
@@ -104,18 +107,20 @@ pub fn foreign_page_path(qualified: &str) -> Option<String> {
 /// A sub-page lives at `<id>/<n>-<slug>.md`, so it cannot take the path
 /// of a document whose id reads like `<id>-<slug>`. The index keeps two
 /// sub-pages with one slug apart, which `Scratch!` and `Scratch?` share.
+///
+/// `id` is already a page id, because the only caller is [`chapter_of`]
+/// and it returns before this runs when [`page_path`] refuses. A check
+/// here would be unreachable, and an unreachable check reads as a guard
+/// that something tests.
 #[must_use]
-fn sub_page_path(id: &str, index: usize, title: &str) -> Option<String> {
-    if !is_page_id(id) {
-        return None;
-    }
+fn sub_page_path(id: &str, index: usize, title: &str) -> String {
     let slug = crate::slug::slugify(title);
     let slug = if slug.is_empty() {
         "page".to_string()
     } else {
         slug
     };
-    Some(format!("{id}/{}-{slug}.md", index + 1))
+    format!("{id}/{}-{slug}.md", index + 1)
 }
 
 /// Rewrite `[[id]]` and `[[alias:id]]` into links mdbook resolves.
@@ -123,11 +128,13 @@ fn sub_page_path(id: &str, index: usize, title: &str) -> Option<String> {
 /// mdbook turns a relative `.md` link into the rendered `.html`, so the
 /// rewrite targets the markdown path rather than the output path.
 ///
-/// Code is left alone. A fenced block and an inline span are copied
-/// through untouched, because these tools document `[[id]]` syntax and a
-/// rewritten sample stops being a sample. A reference this module cannot
-/// turn into a path is also left alone, so prose that merely looks like
-/// a reference survives.
+/// A fenced block and a single-line inline span are copied through
+/// untouched, because these tools document `[[id]]` syntax and a
+/// rewritten sample stops being a sample. Three code contexts are not
+/// covered: a span that crosses a line break, an indented block, and a
+/// fence closed by a shorter run of backticks. A reference this module
+/// cannot turn into a path is also left alone, so prose that merely
+/// looks like a reference survives.
 #[must_use]
 pub fn rewrite_links(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
@@ -164,7 +171,12 @@ fn rewrite_line(line: &str, out: &mut String) {
         let (before, from) = rest.split_at(next);
         out.push_str(before);
         if let Some(after) = from.strip_prefix('`') {
-            in_code = !in_code;
+            // A span opens only when it closes on this line. An
+            // unmatched backtick is literal text in CommonMark, and
+            // treating it as an opener lost every link after it.
+            if in_code || after.contains('`') {
+                in_code = !in_code;
+            }
             out.push('`');
             rest = after;
             continue;
@@ -172,8 +184,7 @@ fn rewrite_line(line: &str, out: &mut String) {
         // A link destination is copied through. A reference inside one
         // once became nested brackets that no parser reads as a link.
         if let Some(after) = from.strip_prefix("](") {
-            let line_end = after.find('\n').unwrap_or(after.len());
-            match after[..line_end].find(')') {
+            match after.find(')') {
                 Some(close) => {
                     out.push_str(&from[..2 + close + 1]);
                     rest = &after[close + 1..];
@@ -197,9 +208,9 @@ fn rewrite_line(line: &str, out: &mut String) {
             rest = &from[1..];
             continue;
         }
-        // A reference closes on its own line or it is not one.
-        let line_end = from.find('\n').unwrap_or(from.len());
-        match from[..line_end].find("]]") {
+        // The caller splits on newlines, so `from` holds at most a
+        // trailing one and a reference cannot span two lines here.
+        match from.find("]]") {
             Some(end) => {
                 let target = &from[2..end];
                 match foreign_page_path(target) {
@@ -257,9 +268,9 @@ fn chapter_of<D: Chaptered>(id: &str, doc: &D) -> Option<Chapter> {
         .sub_pages()
         .into_iter()
         .enumerate()
-        .filter_map(|(index, (title, body))| {
-            let sub_path = sub_page_path(id, index, &title)?;
-            Some(BookItem::Chapter(Chapter {
+        .map(|(index, (title, body))| {
+            let sub_path = sub_page_path(id, index, &title);
+            BookItem::Chapter(Chapter {
                 name: title.clone(),
                 content: format!("# {title}\n\n{}\n", rewrite_links(&body)),
                 number: None,
@@ -267,7 +278,7 @@ fn chapter_of<D: Chaptered>(id: &str, doc: &D) -> Option<Chapter> {
                 path: Some(sub_path.into()),
                 source_path: None,
                 parent_names: vec![doc.title()],
-            }))
+            })
         })
         .collect();
     Some(Chapter {
@@ -313,24 +324,96 @@ where
     Book::new_with_items(items)
 }
 
-/// True when this module may empty `destination`.
+/// Every path under `dir`, relative to it, files and directories alike.
+fn inventory(dir: &Path) -> Result<Vec<String>> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+        let entries = std::fs::read_dir(dir).map_err(|source| Error::StorePath {
+            rel: ".".to_string(),
+            root: dir.display().to_string(),
+            source,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::StorePath {
+                rel: ".".to_string(),
+                root: dir.display().to_string(),
+                source,
+            })?;
+            let path = entry.path();
+            if let Ok(rel) = path.strip_prefix(base) {
+                out.push(rel.to_string_lossy().into_owned());
+            }
+            // `symlink_metadata`, so a linked directory is one entry
+            // rather than a tree this render claims to own.
+            let meta = std::fs::symlink_metadata(&path).map_err(|source| Error::StorePath {
+                rel: path.display().to_string(),
+                root: base.display().to_string(),
+                source,
+            })?;
+            if meta.is_dir() {
+                walk(base, &path, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// The reason a destination cannot be written, or `None` when it can.
 ///
-/// Absent or empty is safe. A directory carrying the marker was written
-/// by a previous render, so a re-render may replace it. Anything else
-/// belongs to a person and is refused.
-fn may_write(destination: &Path) -> Result<bool> {
+/// Absent or empty is safe. Otherwise the marker must list every path
+/// the directory now holds, because mdbook empties its output directory
+/// before it writes and it exempts nothing: a `.git` directory, a
+/// `CNAME`, and a hand-written file all go.
+///
+/// The marker alone is not enough, and an earlier version that trusted
+/// it was wrong. One planted file licensed deleting everything beside
+/// it, and the ordinary way to publish this output — render, then `git
+/// init` in the destination and add a `CNAME` — armed the same deletion
+/// with no attacker at all. So a re-render deletes only what the last
+/// render wrote, and anything else refuses.
+fn refusal(destination: &Path) -> Result<Option<String>> {
     if !destination.exists() {
-        return Ok(true);
+        return Ok(None);
     }
-    if destination.join(MARKER).is_file() {
-        return Ok(true);
+    let held = inventory(destination)?;
+    if held.is_empty() {
+        return Ok(None);
     }
-    let mut entries = std::fs::read_dir(destination).map_err(|source| Error::StorePath {
-        rel: ".".to_string(),
-        root: destination.display().to_string(),
-        source,
-    })?;
-    Ok(entries.next().is_none())
+    let marker = destination.join(MARKER);
+    let Ok(text) = std::fs::read_to_string(&marker) else {
+        return Ok(Some(format!(
+            "{} is not empty and holds no render inventory. A render empties its \
+             destination, so it refuses this one",
+            destination.display()
+        )));
+    };
+    let listed: std::collections::BTreeSet<&str> = text.lines().skip(1).collect();
+    let unlisted: Vec<&String> = held
+        .iter()
+        .filter(|p| p.as_str() != MARKER && !listed.contains(p.as_str()))
+        .collect();
+    if unlisted.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{} holds {} the last render did not write, {}. A render empties its destination, \
+         so it refuses this one",
+        destination.display(),
+        if unlisted.len() == 1 {
+            "a path"
+        } else {
+            "paths"
+        },
+        unlisted
+            .iter()
+            .take(3)
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 /// A scratch directory nothing can predict.
@@ -380,12 +463,8 @@ fn render_html_in(scratch_base: &Path, book: Book, title: &str, destination: &Pa
             "the store holds no local document, so the book would have no page".to_string(),
         ));
     }
-    if !may_write(destination)? {
-        return Err(Error::InvalidStore(format!(
-            "{} is not empty and no render wrote it. A render empties its destination, so \
-             it refuses this one",
-            destination.display()
-        )));
+    if let Some(why) = refusal(destination)? {
+        return Err(Error::InvalidStore(why));
     }
 
     let scratch = scratch_dir_in(scratch_base);
@@ -409,12 +488,19 @@ fn render_html_in(scratch_base: &Path, book: Book, title: &str, destination: &Pa
     let _ = std::fs::remove_dir_all(&scratch);
     rendered?;
 
-    std::fs::write(destination.join(MARKER), "written by mdstore\n").map_err(|source| {
-        Error::StorePath {
-            rel: MARKER.to_string(),
-            root: destination.display().to_string(),
-            source,
+    // The inventory is what licenses the next render's delete, so it
+    // lists what this one produced and nothing else.
+    let mut listing = String::from("written by mdstore\n");
+    for path in inventory(destination)? {
+        if path != MARKER {
+            listing.push_str(&path);
+            listing.push('\n');
         }
+    }
+    std::fs::write(destination.join(MARKER), listing).map_err(|source| Error::StorePath {
+        rel: MARKER.to_string(),
+        root: destination.display().to_string(),
+        source,
     })
 }
 
