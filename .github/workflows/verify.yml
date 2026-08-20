@@ -32,4 +32,4 @@ jobs:
           cargo test --workspace --all-features
       - name: 'missouri suite'
         run: |
-          sh -c '[ -d tests/missouri ] || exit 0; cd tests/missouri && missouri run'
+          sh -c '[ -d tests/missouri ] || exit 0; cd tests/missouri && MISSOURI_SANDBOX=preinstalled missouri run'

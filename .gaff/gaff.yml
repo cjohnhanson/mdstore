@@ -81,5 +81,10 @@ github:
         command: [cargo, clippy, --workspace, --all-targets, --all-features, --, -D, warnings]
       - name: tests
         command: [cargo, test, --workspace, --all-features]
+      # MISSOURI_SANDBOX=preinstalled, because a runner has no nix and
+      # the action installs the packages the suites declare. Without it
+      # missouri refuses: "nix sandbox configured but `nix` binary not
+      # found on PATH". merge-gate.sh sets the same variable when CI is
+      # set.
       - name: missouri suite
-        command: [sh, -c, "[ -d tests/missouri ] || exit 0; cd tests/missouri && missouri run"]
+        command: [sh, -c, "[ -d tests/missouri ] || exit 0; cd tests/missouri && MISSOURI_SANDBOX=preinstalled missouri run"]
