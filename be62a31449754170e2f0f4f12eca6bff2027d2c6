@@ -1,0 +1,30 @@
+fresh-eyes: independent review agent, not the author. Reviewer is an agent, not a human.
+
+Three rounds. Two returned FIX FIRST, and each found a defect in the previous round's fix. Round three returned SHIP.
+
+signoff[fresh-eyes] PASS read the diff cold across three rounds, judged the mdbook API use, measured the dependency delta, and checked the allowlist against 221 real document ids in four stores, none refused.
+signoff[mutation] PASS thirty mutations across the rounds. Seventeen killed in round two, four of five in round three. Every survivor is recorded below with what it means.
+
+What the review caught, in order of severity, because the pattern matters more than the list.
+
+render_html emptied the caller's directory. mdbook removes its output directory's content before it writes, and the function neither checked nor documented it. Measured: a directory holding README.md and precious/notes.txt rendered Ok and lost both.
+
+The fix for that created a forgeable delete token. One planted marker licensed emptying everything beside it, and mdbook exempts no dotfile, so .git went too. No attacker was needed: render, then git init in the destination and add a CNAME, and the next render eats both. The marker now lists every path the render wrote and a re-render refuses anything absent from it.
+
+The character rules were a denylist grown one character per defect, and still admitted the > that closes the angle brackets a destination is now written with. That was a regression an earlier fix introduced. An allowlist replaced it.
+
+Smaller, each with a test: references rewritten inside fenced blocks, inline spans and link destinations; a stray backtick silently killing every reference after it on a line; two sub-page titles that slug alike sharing a path; a table cell ending its own row; an empty book publishing a site whose root 404s; a refusal message that named no remedy and read the same for an interrupted render as for a precious directory.
+
+Three comments asserted properties the code did not have: strictDeps credited with keeping a dependency out of the closure, mdbook said to carry tokio which reqwest and gix already bring, and symlink_metadata described as a containment guard when it is a termination guard.
+
+Survivors, and what each one meant rather than what it looked like.
+
+A guard in sub_page_path survived deletion because it was unreachable: chapter_of returns first when page_path refuses. Deleted rather than tested, because an unreachable check reads as a guard something tests.
+
+Two line_end bounds survived because the caller already splits on newlines. Deleted, and the claim moved to the caller that does the work.
+
+symlink_metadata survived in round three. It protects termination, not containment: descending a planted link still yields unlisted entries and still refuses, while link pointing at its own directory is unbounded recursion. Now tested, and the mutation fails.
+
+Not closed, and stated rather than hidden. A deliberate attacker who can write the marker can write an inventory too, because the inventory authenticates nothing. Write access to a directory already carries unlink rights, so no privilege is gained, and the sharp case fails anyway: a committed marker cannot predict a clone's pack file name, so the render refuses. Only rendering into a scratch sibling and renaming into place would close it, and that is recorded as the standing suggestion. The check-then-act window between the destination check and mdbook's delete joins the class already tracked in v882.
+
+Gate on be62a31: 222 unit tests, 0 failed, 1 ignored for the network, plus 7 integration, 1 single-binary, 2 doc-tests. clippy clean with and without the feature. fmt clean. 210 packages plain, 267 with the book feature, delta 57.
