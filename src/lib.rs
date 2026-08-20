@@ -14,7 +14,9 @@ pub mod snapshot;
 pub mod store;
 pub mod userconfig;
 
-pub use document::{Document, parse, serialize};
+pub use document::{
+    Document, Fence, parse, parse_any, parse_with, serialize, serialize_with, split, split_with,
+};
 pub use error::{Error, Result};
 pub use provenance::{Marker, Span, markers_in};
 pub use registry::Registry;
