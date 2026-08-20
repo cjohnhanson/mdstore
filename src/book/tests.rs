@@ -596,3 +596,54 @@ fn a_stray_backtick_does_not_swallow_a_later_reference() {
         "the link was lost: {out}"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn an_inventory_of_a_looping_symlink_terminates() {
+    // `link -> .` is unbounded recursion for a walk that descends a
+    // link. The walk reads link metadata and does not descend, so the
+    // loop cannot form.
+    let dir = scratch("loop");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("page.html"), "a page").unwrap();
+    std::os::unix::fs::symlink(".", dir.join("link")).unwrap();
+
+    let held = inventory(&dir).expect("the walk returns");
+    assert!(held.contains(&"link".to_string()), "{held:?}");
+    assert!(
+        !held.iter().any(|p| p.starts_with("link/")),
+        "the walk descended the link: {held:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_refusal_names_what_to_do_about_it() {
+    // A refusal a person cannot act on is a refusal they route around.
+    let dir = scratch("remedy");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("page.html"), "output with no marker").unwrap();
+    let book = || {
+        Book::new_with_items(vec![BookItem::Chapter(
+            chapter_of("5jls", &doc("A page.")).unwrap(),
+        )])
+    };
+    let err = render_html(book(), "A book", &dir).unwrap_err().to_string();
+    assert!(
+        err.contains("render again"),
+        "no remedy for a stranded render: {err}"
+    );
+    assert!(
+        err.contains("somewhere else"),
+        "no remedy for a precious directory: {err}"
+    );
+
+    // The other refusal names the offending path and a remedy.
+    let _ = std::fs::remove_dir_all(&dir);
+    render_html(book(), "A book", &dir).unwrap();
+    std::fs::write(dir.join(".DS_Store"), "finder").unwrap();
+    let err = render_html(book(), "A book", &dir).unwrap_err().to_string();
+    assert!(err.contains(".DS_Store"), "the path is not named: {err}");
+    assert!(err.contains("Remove the path"), "no remedy: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

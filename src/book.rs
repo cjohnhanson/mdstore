@@ -385,8 +385,10 @@ fn refusal(destination: &Path) -> Result<Option<String>> {
     let marker = destination.join(MARKER);
     let Ok(text) = std::fs::read_to_string(&marker) else {
         return Ok(Some(format!(
-            "{} is not empty and holds no render inventory. A render empties its \
-             destination, so it refuses this one",
+            "{} is not empty and holds no record of a render. A render empties its \
+             destination, so it refuses one it cannot account for. If a render was \
+             interrupted here, remove the directory and render again. If the directory \
+             holds anything worth keeping, render somewhere else",
             destination.display()
         )));
     };
@@ -400,7 +402,8 @@ fn refusal(destination: &Path) -> Result<Option<String>> {
     }
     Ok(Some(format!(
         "{} holds {} the last render did not write, {}. A render empties its destination, \
-         so it refuses this one",
+         so it refuses one holding anything else. Remove the path, or render somewhere \
+         else. A file the system wrote, such as .DS_Store, counts",
         destination.display(),
         if unlisted.len() == 1 {
             "a path"
