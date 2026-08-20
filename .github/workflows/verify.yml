@@ -19,6 +19,8 @@ jobs:
         uses: 'Swatinem/rust-cache@v2'
       - name: 'gaff'
         uses: 'cjohnhanson/gaff@main'
+        with:
+          'run': 'false'
       - name: 'formatting'
         run: |
           cargo fmt --all --check

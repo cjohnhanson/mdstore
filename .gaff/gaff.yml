@@ -68,8 +68,13 @@ github:
           components: clippy, rustfmt
       - name: rust cache
         uses: Swatinem/rust-cache@v2
+      # `run: false`, because this action runs `gaff ci` by default and
+      # that is the review check. Verify installs the binary the suite
+      # drives and runs the gate on nothing.
       - name: gaff
         uses: cjohnhanson/gaff@main
+        with:
+          run: "false"
       - name: formatting
         command: [cargo, fmt, --all, --check]
       - name: clippy
