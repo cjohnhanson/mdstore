@@ -57,14 +57,25 @@ The merge gate runs the tests, then requires a review note:
 cargo test --workspace --all-features
 ```
 
-A push carries a review note on its tip. A reviewer who did not write
-the change reads it, then removes a guard the change adds and watches a
-named test go red. The note records both:
+A push carries a review note on its tip. `gaff reviews` prints the
+reviews a change must pass here, and each one is a skill under
+`.agents/skills`, vendored by almanac and pinned. One agent reads one
+criterion and sees the change and nothing from the author's session.
+`review-tests` is the one that removes a guard the change adds and
+watches a named test go red.
+
+Each sign-off is one line, anchored at the start of a line, naming the
+commit it reviewed. Write them all in one note: separate writes race on
+the notes ref, and the loser is a sign-off nobody sees again.
 
 ```sh
 git notes --ref=reviews add -m \
-  'fresh-eyes: <reviewer> <scope>. Mutation: <what> -> <test> red' <sha>
+  'signoff[review-tests] PASS <sha> removed <guard>, <test> went red
+signoff[review-docs] PASS <sha> swept every prose surface against the code' <sha>
 ```
+
+`.agents/skills/signoff-driver/SKILL.md` states the whole procedure, and
+when to stop: one pass, one fix, one re-run.
 
 A note that only says the change was read is refused. That rule has a
 reason. Every regression that reached a reviewed tip on 2026-08-16 had

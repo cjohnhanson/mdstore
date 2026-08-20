@@ -1,0 +1,5 @@
+managed-by: almanac
+name: review-usability
+source: github:cjohnhanson/skills
+rev: 031c5cf4962595a7517a1f48e1a16aaad564e88d
+sha256: sha256-v1:6aa0c9592e7d9824f180a0f6434f6965437e19036a661f4f3c63b1b2d163ab4e
