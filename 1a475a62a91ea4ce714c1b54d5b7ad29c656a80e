@@ -1,9 +1,9 @@
 fresh-eyes: the author, and stated as such. No independent reviewer read this one.
 
-signoff[fresh-eyes] PASS two tracker files and nothing else. No source, no test, no manifest. The files were created during the mdbook work and never committed, so they lived on one machine's disk and nowhere else, one clean away from gone. 32l8 carries the plan for rendering a store as a book, its seven decisions and its four phases. h8ot records that reading the rendered output showed tisket and zettel documents carry structure only a convention knows.
+signoff[fresh-eyes] PASS 1a475a6 two tracker files and nothing else. No source, no test, no manifest. Both were created during the mdbook work and never committed, so they lived on one machine's disk and nowhere else, one clean away from gone. 32l8 carries the plan for rendering a store as a book, with its decisions and its four phases. h8ot records that reading the rendered output showed tisket and zettel documents carry structure only a convention knows.
 
-signoff[mutation] PASS none applied, and none is possible. A markdown file in a tracker has no behavior to mutate. The mutation record for the code these issues describe is on b7c8454, where the book feature merged.
+signoff[mutation] PASS 1a475a6 none applied, and none is possible. A markdown file in a tracker has no behavior to mutate. The mutation record for the code these two issues describe sits on b7c8454, where the book feature merged, and it lists every guard and the named test that caught it.
 
-Why no independent review. The change adds two documents and changes no code path. A reviewer would read prose that a reviewer already read: 32l8's plan went through the review that produced the feature, and both files are quoted in that feature's own pull request.
+Why no independent review. This adds two documents and changes no code path. A reviewer would read prose a reviewer already read: 32l8's plan went through the three rounds that produced the feature, and both files are quoted in that feature's pull request.
 
-Gate on 1a475a6 is the gate on origin/main, unchanged by two markdown files: 222 unit tests, 7 integration, 2 doc-tests, clippy clean with and without the book feature, fmt clean.
+Gate on 1a475a6 is the gate on origin/main, which two markdown files do not move: 222 unit tests, 7 integration, 2 doc-tests, clippy clean with and without the book feature, fmt clean.
