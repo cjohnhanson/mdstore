@@ -5,7 +5,8 @@
 ### Changed
 
 - `serialize_with` refuses a comment-fenced document whose frontmatter
-  holds `-->`, with `Error::CommentFenceEscape`. That value ends the HTML
+  holds `-->`, with `Error::CommentFenceEscape`, which names the line
+  and its text so a caller can find the value. That value ends the HTML
   comment where it sits, and a renderer then shows the rest of the
   frontmatter and the closing delimiter as text. The document still
   round-tripped, because the parser reads a closing delimiter on its own
