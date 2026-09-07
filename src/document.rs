@@ -189,8 +189,13 @@ pub fn serialize_with<T: Serialize>(doc: &Document<T>, fence: Fence) -> Result<S
     // and every following line becomes visible text. Refusing is the
     // honest answer: escaping would need an unescape on the way back,
     // and any other reader of the file would see the escape instead.
-    if fence == Fence::Comment && yaml.contains("-->") {
-        return Err(Error::CommentFenceEscape);
+    if fence == Fence::Comment
+        && let Some((n, line)) = yaml.lines().enumerate().find(|(_, l)| l.contains("-->"))
+    {
+        return Err(Error::CommentFenceEscape {
+            line: n + 1,
+            text: line.trim().to_string(),
+        });
     }
     let mut out = String::from(fence.open());
     out.push('\n');
@@ -472,7 +477,17 @@ mod tests {
             body: "body".into(),
         };
         let err = serialize_with(&doc, Fence::Comment).expect_err("refused");
-        assert!(matches!(err, Error::CommentFenceEscape), "got {err:?}");
+        assert!(
+            matches!(err, Error::CommentFenceEscape { .. }),
+            "got {err:?}"
+        );
+        // A caller fixes a value it can find, so the refusal names it.
+        let text = err.to_string();
+        assert!(
+            text.contains("Arrows"),
+            "the offending value is named: {text}"
+        );
+        assert!(text.contains("line 1"), "the line is named: {text}");
     }
 
     #[test]

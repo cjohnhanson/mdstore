@@ -20,8 +20,8 @@ pub enum Error {
     /// delimiter as text. The document still round-trips, because the
     /// parser reads a closing delimiter on its own line, so nothing here
     /// catches it later.
-    #[error("a frontmatter value holds `-->`, which closes the comment fence early")]
-    CommentFenceEscape,
+    #[error("frontmatter line {line} holds `-->`, which closes the comment fence early: {text}")]
+    CommentFenceEscape { line: usize, text: String },
 
     /// The document is fenced, in the form that was not asked for.
     ///
