@@ -37,7 +37,8 @@ In scope:
   should be confined to.
 - A fetch reaching a host or a path that the declaration did not name.
 - Reading untrusted content leading to code execution.
-- `~/.config/mdstore/config.yml` naming a root where a write lands. That
+- `~/.config/<tool>/config.yml` naming a root where a write lands. Each
+  tool reads its own file, named by `ToolName`. That
   file is security config. It resolves the home directory from the
   passwd database, never from an environment variable, because every
   environment channel is settable by a repository.

@@ -23,7 +23,7 @@ Or in `Cargo.toml`:
 
 ```toml
 [dependencies]
-mdstore = { version = "0.3", package = "mdstore-core" }
+mdstore = { version = "0.5", package = "mdstore-core" }
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -178,7 +178,7 @@ configuration, the access mode, the document URI form, and the content
 digest.
 
 ```toml
-mdstore = { git = "https://github.com/cjohnhanson/mdstore", features = ["mcp"] }
+mdstore = { version = "0.5", package = "mdstore-core", features = ["mcp"] }
 ```
 
 The feature is off by default, so a consumer that builds only a CLI

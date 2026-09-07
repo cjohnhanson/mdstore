@@ -12,6 +12,17 @@ pub enum Error {
     #[error("missing closing frontmatter delimiter")]
     UnclosedFrontmatter,
 
+    /// A value would close the comment fence early.
+    ///
+    /// `Fence::Comment` exists so that no reader sees the frontmatter.
+    /// A value holding `-->` ends the HTML comment where it appears, and
+    /// a renderer then shows the rest of the frontmatter and the closing
+    /// delimiter as text. The document still round-trips, because the
+    /// parser reads a closing delimiter on its own line, so nothing here
+    /// catches it later.
+    #[error("a frontmatter value holds `-->`, which closes the comment fence early")]
+    CommentFenceEscape,
+
     #[error("{0}")]
     Yaml(#[from] yaml_serde::Error),
 
