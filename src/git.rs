@@ -94,8 +94,36 @@ pub fn local_path(url: &str) -> Option<PathBuf> {
     }
 }
 
+/// The url with its scheme lowercased, where it carries one.
+///
+/// Only the text before `://` changes. A path holding an uppercase
+/// letter keeps it, and a url with no scheme is returned unchanged.
+fn normalize_scheme(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some(end) = url.find("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let scheme = &url[..end];
+    if scheme.is_empty() || !scheme.bytes().any(|b| b.is_ascii_uppercase()) {
+        return std::borrow::Cow::Borrowed(url);
+    }
+    if !scheme
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
+    {
+        return std::borrow::Cow::Borrowed(url);
+    }
+    std::borrow::Cow::Owned(format!("{}{}", scheme.to_ascii_lowercase(), &url[end..]))
+}
+
 fn classify(url: &str) -> Result<Source> {
-    let parsed = gix::url::parse(gix::bstr::BStr::new(url))
+    // git reads a scheme without regard to case, and gix 0.86 did the
+    // same. gix 0.87 parses `FILE://` as a helper named "FILE" instead
+    // of the file scheme, which turned a local path into a source this
+    // machine cannot reach. `local_path` then answered None, and a
+    // vendored store naming an absolute path stopped being refused.
+    // Lowercasing the scheme restores the question this asks.
+    let normalized = normalize_scheme(url);
+    let parsed = gix::url::parse(gix::bstr::BStr::new(&*normalized))
         .map_err(|e| Error::InvalidStore(format!("{url}: {e}")))?;
     Ok(match parsed.scheme {
         gix::url::Scheme::File => {
@@ -108,10 +136,13 @@ fn classify(url: &str) -> Result<Source> {
         gix::url::Scheme::Http | gix::url::Scheme::Https | gix::url::Scheme::Git => {
             Source::Network(parsed)
         }
-        gix::url::Scheme::Ext(ref s) => {
-            return Err(Error::InvalidStore(format!(
-                "{url}: unsupported scheme {s}"
-            )));
+        // gix 0.87 made this a unit variant, so it no longer carries the
+        // scheme text. The url holds it, and the reader needs the url.
+        // gix 0.87 made Ext a unit variant and added two helper forms.
+        // None of the three names a transport this store can use, and
+        // the url carries the scheme text a reader needs.
+        gix::url::Scheme::Ext | gix::url::Scheme::Helper(_) | gix::url::Scheme::HelperUrl(_) => {
+            return Err(Error::InvalidStore(format!("{url}: unsupported scheme")));
         }
     })
 }
@@ -632,12 +663,14 @@ fn mirror_local(
 /// and publishes what came before, which lands a slot whose pack
 /// claims more objects than its index holds: every later read fails,
 /// permanently, until a person deletes the slot.
-fn bundle_options(object_hash: gix::hash::Kind) -> gix_pack::bundle::write::Options {
+fn bundle_options() -> gix_pack::bundle::write::Options {
+    // gix-pack 0.74 moved object_hash out of these options and into an
+    // argument of write_to_directory, so the hash travels beside the
+    // pack rather than inside its settings.
     gix_pack::bundle::write::Options {
         thread_limit: None,
         iteration_mode: gix_pack::data::input::Mode::Verify,
         index_version: gix_pack::index::Version::default(),
-        object_hash,
         ..Default::default()
     }
 }
@@ -660,7 +693,7 @@ fn write_pack(src: &gix::Repository, ids: Vec<gix::ObjectId>, dst_objects: &Path
     // objects directory, and the objects live in the common dir. The
     // two are the same path for an ordinary repository. The loose arm
     // never had this, because src.objects already follows it.
-    let find = gix_odb::at(src.common_dir().join("objects"))
+    let find = gix_odb::at(src.common_dir().join("objects"), src.object_hash())
         .and_then(gix_odb::Handle::into_arc)
         .map_err(|e| Error::InvalidStore(format!("open source objects: {e}")))?;
     let counts: Vec<gix_pack::data::output::Count> = ids
@@ -696,7 +729,8 @@ fn write_pack(src: &gix::Repository, ids: Vec<gix::ObjectId>, dst_objects: &Path
         &mut gix::progress::Discard,
         &std::sync::atomic::AtomicBool::new(false),
         None::<gix::objs::find::Never>,
-        bundle_options(src.object_hash()),
+        src.object_hash(),
+        bundle_options(),
     )
     .map_err(|e| Error::InvalidStore(format!("index pack: {e}")))?;
     Ok(())
@@ -970,6 +1004,34 @@ fn credentials_from_store_file(want: &gix::Url) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_uppercase_file_scheme_still_names_this_machine() {
+        // gix 0.87 parses `FILE://` as a helper named "FILE" rather
+        // than the file scheme. Unnormalized, `local_path` answered
+        // None, and a guard that refuses a vendored store naming a
+        // local path stopped firing. git reads a scheme without regard
+        // to case, so this must too.
+        for prefix in ["file", "FILE", "FiLe"] {
+            let url = format!("{prefix}:///tmp/somewhere");
+            assert_eq!(
+                local_path(&url),
+                Some(std::path::PathBuf::from("/tmp/somewhere")),
+                "{url} should name a path on this machine"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizing_a_scheme_leaves_the_rest_alone() {
+        assert_eq!(
+            normalize_scheme("FILE:///Tmp/CasePath"),
+            "file:///Tmp/CasePath"
+        );
+        assert_eq!(normalize_scheme("file:///already"), "file:///already");
+        assert_eq!(normalize_scheme("/plain/path"), "/plain/path");
+        assert_eq!(normalize_scheme("git@host:repo.git"), "git@host:repo.git");
+    }
+
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
@@ -1354,7 +1416,8 @@ mod tests {
             &mut gix::progress::Discard,
             &std::sync::atomic::AtomicBool::new(false),
             None::<gix::objs::find::Never>,
-            bundle_options(gix::hash::Kind::Sha1),
+            gix::hash::Kind::Sha1,
+            bundle_options(),
         );
         assert!(
             refused.is_err(),
@@ -1373,7 +1436,8 @@ mod tests {
             &mut gix::progress::Discard,
             &std::sync::atomic::AtomicBool::new(false),
             None::<gix::objs::find::Never>,
-            bundle_options(gix::hash::Kind::Sha1),
+            gix::hash::Kind::Sha1,
+            bundle_options(),
         )
         .expect("a sound pack was refused");
         assert!(dir.join("HEAD").exists());

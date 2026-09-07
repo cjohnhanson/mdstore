@@ -152,6 +152,13 @@ pub fn serialize<T: Serialize>(doc: &Document<T>) -> Result<String> {
 /// Serialize a document in one fence form.
 pub fn serialize_with<T: Serialize>(doc: &Document<T>, fence: Fence) -> Result<String> {
     let yaml = yaml_serde::to_string(&doc.frontmatter)?;
+    // A value holding the close marker ends the comment where it sits,
+    // and every following line becomes visible text. Refusing is the
+    // honest answer: escaping would need an unescape on the way back,
+    // and any other reader of the file would see the escape instead.
+    if fence == Fence::Comment && yaml.contains("-->") {
+        return Err(Error::CommentFenceEscape);
+    }
     let mut out = String::from(fence.open());
     out.push('\n');
     out.push_str(&yaml);
@@ -379,7 +386,13 @@ mod tests {
     }
 
     #[test]
-    fn a_title_holding_the_comment_close_survives_a_round_trip() {
+    fn a_title_holding_the_comment_close_is_refused() {
+        // The round trip used to pass here, and that was the defect.
+        // The parser reads a closing delimiter on its own line, so it
+        // returned the value unharmed. A markdown renderer ends the
+        // comment at the `-->` inside the title, and shows the rest of
+        // the frontmatter and the closing delimiter as text. The whole
+        // point of this fence is that no reader sees the frontmatter.
         let doc = Document {
             frontmatter: TestFrontmatter {
                 title: "Arrows --> and back".into(),
@@ -387,10 +400,23 @@ mod tests {
             },
             body: "body".into(),
         };
-        let serialized = serialize_with(&doc, Fence::Comment).unwrap();
-        let parsed: Document<TestFrontmatter> = parse_with(&serialized, Fence::Comment).unwrap();
+        let err = serialize_with(&doc, Fence::Comment).expect_err("refused");
+        assert!(matches!(err, Error::CommentFenceEscape), "got {err:?}");
+    }
+
+    #[test]
+    fn the_yaml_fence_takes_a_value_holding_the_comment_close() {
+        // Only the comment fence is harmed by it.
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "Arrows --> and back".into(),
+                tags: vec![],
+            },
+            body: "body".into(),
+        };
+        let serialized = serialize_with(&doc, Fence::Yaml).expect("serialized");
+        let parsed: Document<TestFrontmatter> = parse_with(&serialized, Fence::Yaml).unwrap();
         assert_eq!(parsed.frontmatter, doc.frontmatter);
-        assert_eq!(parsed.body, "body");
     }
 
     #[test]
