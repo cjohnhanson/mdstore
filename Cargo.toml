@@ -21,6 +21,10 @@ exclude = [
     "scripts/",
     # Shells out to scripts/merge-gate.sh, which the line above drops.
     "tests/merge_gate_guard.rs",
+    # Vendored review skills and the manifest that pins them. Repository
+    # machinery, and a consumer of the library never reads them.
+    ".agents/",
+    "almanac.yml",
     "CONTRIBUTING.md",
     "AGENTS.md",
     ".editorconfig",
