@@ -2083,8 +2083,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdstore"
-version = "0.4.0"
+name = "mdstore-core"
+version = "0.5.0"
 dependencies = [
  "cap-std",
  "gix",

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- A document records the fence its frontmatter used, and writes it back
+  the same way. `Fence` names the two forms, `parse_any` reads either,
+  and `serialize_with` writes the one asked for. A store that reads a
+  file with a comment fence no longer rewrites it as the other form.
+
 ## 0.4.0
 
 This version is on `main` and was never described here. The entry is
@@ -154,8 +163,11 @@ written after the fact, from the commits.
 ## 0.3.0
 
 Breaking. A store now reads and writes through a capability handle, so
-the operating system refuses a path that leaves the store. A caller
-cannot forget a check, because there is no check to forget.
+a path that leaves the store is refused. A caller cannot forget a
+check, because there is no check to forget. The kernel enforces this
+on Linux and on FreeBSD; elsewhere, macOS included, cap-std resolves
+the path in userspace. See the `confined` module for what each
+platform gives.
 
 ### Breaking changes
 
