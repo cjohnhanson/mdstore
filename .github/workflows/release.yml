@@ -11,13 +11,11 @@
 name: release
 
 on:
-  # A dry run. Every build job runs and every publish job is skipped, so
-  # the whole thing can be exercised before a tag exists. A release that
-  # first runs on tag day is a guess.
   # A dry run, and only ever a dry run. Every build job runs and nothing
-  # is uploaded. A dispatch carries no tag, so it has no version to
-  # publish and no release to attach: publishing from one reached three
-  # registries and then failed with the version permanently taken.
+  # is uploaded, so the whole thing can be exercised before a tag exists.
+  # A dispatch carries no tag, so it has no version to publish and no
+  # release to attach. Publishing from one reached three registries and
+  # then failed, with the version permanently taken.
   workflow_dispatch:
   push:
     tags:

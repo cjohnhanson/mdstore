@@ -136,11 +136,9 @@ fn classify(url: &str) -> Result<Source> {
         gix::url::Scheme::Http | gix::url::Scheme::Https | gix::url::Scheme::Git => {
             Source::Network(parsed)
         }
-        // gix 0.87 made this a unit variant, so it no longer carries the
-        // scheme text. The url holds it, and the reader needs the url.
         // gix 0.87 made Ext a unit variant and added two helper forms.
-        // None of the three names a transport this store can use, and
-        // the url carries the scheme text a reader needs.
+        // None of the three names a transport this store can use. Ext no
+        // longer carries the scheme text either, and the url holds it.
         gix::url::Scheme::Ext | gix::url::Scheme::Helper(_) | gix::url::Scheme::HelperUrl(_) => {
             return Err(Error::InvalidStore(format!("{url}: unsupported scheme")));
         }

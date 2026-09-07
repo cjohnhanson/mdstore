@@ -5,20 +5,22 @@
 ### Changed
 
 - `serialize_with` refuses a comment-fenced document whose frontmatter
-  closes the comment early, with `Error::CommentFenceEscape`, which names
-  the line and its text so a caller can find the value. An HTML parser
-  ends a comment on `-->` and on `--!>` alike, and both are refused.
+  closes the comment early, with `Error::CommentFenceEscape`. The error
+  names the line and its text, so a caller can find the value. An HTML
+  parser ends a comment on `-->` and on `--!>` alike, and both are
+  refused.
+
+  Such a value ends the comment where it sits. A renderer then shows the
+  rest of the frontmatter, and the closing delimiter, as text. The
+  document still round-tripped, because the parser reads a closing
+  delimiter on its own line, so nothing caught it later. The comment
+  fence exists so that no reader sees the frontmatter.
 
 - The package publishes as `mdstore-core`, because `mdstore` on
   crates.io belongs to another author. The lib keeps the name consumers
   import, so a dependency reads
   `mdstore = { version = "0.5", package = "mdstore-core" }` and no source
-  changes. That value ends the HTML
-  comment where it sits, and a renderer then shows the rest of the
-  frontmatter and the closing delimiter as text. The document still
-  round-tripped, because the parser reads a closing delimiter on its own
-  line, so nothing caught it later. The comment fence exists so that no
-  reader sees the frontmatter, and this is what holds that true.
+  changes.
 
 - `parse` and `parse_with` name the other form rather than reporting
   nothing. A document written in the fence that was not asked for gave
