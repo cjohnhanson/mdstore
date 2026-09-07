@@ -2,6 +2,23 @@
 
 ## 0.5.0
 
+### Changed
+
+- `serialize_with` refuses a comment-fenced document whose frontmatter
+  holds `-->`, with `Error::CommentFenceEscape`. That value ends the HTML
+  comment where it sits, and a renderer then shows the rest of the
+  frontmatter and the closing delimiter as text. The document still
+  round-tripped, because the parser reads a closing delimiter on its own
+  line, so nothing caught it later. The comment fence exists so that no
+  reader sees the frontmatter, and this is what holds that true.
+
+- `parse` and `parse_with` name the other form rather than reporting
+  nothing. A document written in the fence that was not asked for gave
+  `MissingFrontmatter`, the same answer as a file carrying no
+  frontmatter, so a caller could not tell them apart. It now gives
+  `Error::WrongFence`, which names the form found and points at
+  `parse_any`.
+
 ### Added
 
 - A document records the fence its frontmatter used, and writes it back

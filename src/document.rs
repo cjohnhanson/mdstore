@@ -28,6 +28,24 @@ pub enum Fence {
 }
 
 impl Fence {
+    /// The form this one is not.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Yaml => Self::Comment,
+            Self::Comment => Self::Yaml,
+        }
+    }
+
+    /// The form's name, for a message.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Yaml => "yaml",
+            Self::Comment => "comment",
+        }
+    }
+
     /// The opening delimiter, on its own line.
     #[must_use]
     pub fn open(self) -> &'static str {
@@ -98,7 +116,22 @@ pub fn split_with(content: &str, fence: Fence) -> Result<(&str, &str)> {
 /// ends.
 fn split_fences(content: &str, fence: Fence) -> Result<(&str, &str)> {
     let content = content.trim();
-    let rest = strip_open(content, fence.open()).ok_or(Error::MissingFrontmatter)?;
+    let rest = match strip_open(content, fence.open()) {
+        Some(rest) => rest,
+        None => {
+            // A document written in the other form is a different
+            // problem from a file that carries no frontmatter, and a
+            // caller can act on the difference.
+            let other = fence.other();
+            return Err(if strip_open(content, other.open()).is_some() {
+                Error::WrongFence {
+                    found: other.name(),
+                }
+            } else {
+                Error::MissingFrontmatter
+            });
+        }
+    };
 
     let close = fence.close();
     let mut offset = 0;
@@ -174,6 +207,44 @@ pub fn serialize_with<T: Serialize>(doc: &Document<T>, fence: Fence) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_other_fence_is_named_rather_than_reported_as_missing() {
+        // A caller meeting MissingFrontmatter cannot tell a document in
+        // the other form from a file that is not a document. That was
+        // this change's own motivating case: a page in the comment
+        // form, read by a caller asking for yaml.
+        let comment = "<!-- metadata\ntitle: T\ntags: []\n-->\n\nbody";
+        let err = parse_with::<TestFrontmatter>(comment, Fence::Yaml).expect_err("refused");
+        assert!(
+            matches!(err, Error::WrongFence { found: "comment" }),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("parse_any"),
+            "the fix is named: {err}"
+        );
+
+        let yaml = "---\ntitle: T\ntags: []\n---\n\nbody";
+        let err = parse_with::<TestFrontmatter>(yaml, Fence::Comment).expect_err("refused");
+        assert!(
+            matches!(err, Error::WrongFence { found: "yaml" }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_document_still_reports_missing() {
+        // The other half of the distinction: no fence of either form.
+        for content in ["", "just a body", "# A heading\n\ntext"] {
+            let err = parse_with::<TestFrontmatter>(content, Fence::Yaml).expect_err("refused");
+            assert!(
+                matches!(err, Error::MissingFrontmatter),
+                "{content:?} gave {err:?}"
+            );
+        }
+    }
+
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize, Serialize, PartialEq)]

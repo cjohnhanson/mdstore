@@ -23,6 +23,17 @@ pub enum Error {
     #[error("a frontmatter value holds `-->`, which closes the comment fence early")]
     CommentFenceEscape,
 
+    /// The document is fenced, in the form that was not asked for.
+    ///
+    /// `parse` and `parse_with` each read one form. A caller that meets
+    /// this holds a document written in the other, and `parse_any`
+    /// reads either and reports which it found. Without this variant
+    /// the refusal was `MissingFrontmatter`, the same answer given for
+    /// a file that is not a document at all, and a caller could not
+    /// tell the two apart.
+    #[error("frontmatter is written in the {found} fence; `parse_any` reads either form")]
+    WrongFence { found: &'static str },
+
     #[error("{0}")]
     Yaml(#[from] yaml_serde::Error),
 
