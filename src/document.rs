@@ -189,8 +189,14 @@ pub fn serialize_with<T: Serialize>(doc: &Document<T>, fence: Fence) -> Result<S
     // and every following line becomes visible text. Refusing is the
     // honest answer: escaping would need an unescape on the way back,
     // and any other reader of the file would see the escape instead.
+    // The HTML parser ends a comment on `-->` and on `--!>` alike, so
+    // both leak the frontmatter this fence exists to hide. A reviewer
+    // demonstrated the second by rendering a page and reading the value.
     if fence == Fence::Comment
-        && let Some((n, line)) = yaml.lines().enumerate().find(|(_, l)| l.contains("-->"))
+        && let Some((n, line)) = yaml
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("-->") || l.contains("--!>"))
     {
         return Err(Error::CommentFenceEscape {
             line: n + 1,
@@ -488,6 +494,28 @@ mod tests {
             "the offending value is named: {text}"
         );
         assert!(text.contains("line 1"), "the line is named: {text}");
+    }
+
+    #[test]
+    fn both_html_comment_terminators_are_refused() {
+        // An HTML parser ends a comment on `-->` and on `--!>`. Only the
+        // first was refused, and the second leaked the frontmatter in a
+        // rendered page.
+        for marker in ["-->", "--!>", "a --> b", "x --!> y"] {
+            let doc = Document {
+                frontmatter: TestFrontmatter {
+                    title: marker.to_string(),
+                    tags: vec![],
+                },
+                body: "body".into(),
+            };
+            let err = serialize_with(&doc, Fence::Comment)
+                .expect_err(&format!("{marker} should be refused"));
+            assert!(
+                matches!(err, Error::CommentFenceEscape { .. }),
+                "{marker} gave {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -1924,6 +1924,11 @@ mod tests {
             ("git-file-url-upper", format!("git: FILE://{abs}")),
             ("git-file-url-host", format!("git: file://localhost{abs}")),
             ("blob-abs", format!("blob: {abs}")),
+            // A reviewer found these two absent and added them. The blob
+            // key takes a url as the git key does, so it needs the same
+            // cover, including the uppercase form gix stopped folding.
+            ("blob-file-url", format!("blob: file://{abs}")),
+            ("blob-file-url-upper", format!("blob: FILE://{abs}")),
         ] {
             let root = base.join(format!("root-{label}"));
             let vendored = base.join(format!("vendored-{label}"));
