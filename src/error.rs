@@ -12,6 +12,31 @@ pub enum Error {
     #[error("missing closing frontmatter delimiter")]
     UnclosedFrontmatter,
 
+    /// A value would close the comment fence early.
+    ///
+    /// `Fence::Comment` exists so that no reader sees the frontmatter.
+    /// A value holding `-->` ends the HTML comment where it appears, and
+    /// a renderer then shows the rest of the frontmatter and the closing
+    /// delimiter as text. The document still round-trips, because the
+    /// parser reads a closing delimiter on its own line, so nothing here
+    /// catches it later.
+    #[error(
+        "frontmatter line {line} closes the comment fence early: {text}. \
+         Write it in the yaml fence, or change the value."
+    )]
+    CommentFenceEscape { line: usize, text: String },
+
+    /// The document is fenced, in the form that was not asked for.
+    ///
+    /// `parse` and `parse_with` each read one form. A caller that meets
+    /// this holds a document written in the other, and `parse_any`
+    /// reads either and reports which it found. Without this variant
+    /// the refusal was `MissingFrontmatter`, the same answer given for
+    /// a file that is not a document at all, and a caller could not
+    /// tell the two apart.
+    #[error("frontmatter is written in the {found} fence; `parse_any` reads either form")]
+    WrongFence { found: &'static str },
+
     #[error("{0}")]
     Yaml(#[from] yaml_serde::Error),
 

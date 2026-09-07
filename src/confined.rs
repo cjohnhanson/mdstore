@@ -11,9 +11,28 @@
 //! found a different caller that did not.
 //!
 //! [`StoreDir`] holds an open directory. Every read, write, and scan
-//! goes through the handle, and the operating system refuses a path
-//! that leaves it. A caller cannot forget the check, because there is
-//! no check to forget.
+//! goes through the handle, so a path that leaves the store is
+//! refused. A caller cannot forget the check, because there is no
+//! check to forget.
+//!
+//! # Who refuses, and it is not always the kernel
+//!
+//! On Linux and on FreeBSD the kernel refuses. cap-std opens with
+//! `RESOLVE_BENEATH`, so a path that escapes fails inside the syscall
+//! and no sequence of steps can walk out.
+//!
+//! Everywhere else, macOS included, cap-std resolves the path in
+//! userspace. It opens one component at a time and follows each
+//! symlink itself, refusing a component that leaves the store. The
+//! refusal covers the same paths, and it is not atomic. Another
+//! process that renames a directory between two steps of that walk is
+//! a race the kernel form does not have. cap-std says so itself: its
+//! race checks sit behind a `racy_asserts` build flag.
+//!
+//! So the guarantee is worth naming precisely. This module answers
+//! untrusted text in a path, and it answers that on every platform. It
+//! does not answer a hostile process racing the walk from inside the
+//! store directory, and on macOS that gap is real.
 //!
 //! # What this does not cover
 //!
@@ -96,7 +115,7 @@ impl StoreDir {
     /// refused docs/../absent and accepted docs/../docs, and
     /// dir_is_empty answered through the climb. The handle still
     /// refuses an actual escape either way; this makes the answer the
-    /// same before the operating system is asked.
+    /// same before cap-std is asked.
     fn no_climb(&self, rel: &str) -> Result<()> {
         if Path::new(rel)
             .components()
@@ -121,7 +140,7 @@ impl StoreDir {
     /// The name of the store root itself.
     ///
     /// An empty relative path names the root to every caller, but the
-    /// operating system refuses it. Reading it as "." made a scan of
+    /// resolver refuses it. Reading it as "." made a scan of
     /// the root return no documents, and the NotFound arm hid that as
     /// an empty store.
     fn at(rel: &str) -> &str {
@@ -653,9 +672,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_plain_create_through_an_escaping_link_also_fails() {
-        // What the handle gives that a flag cannot: the escape is
-        // refused by the operating system, so a caller that forgets
-        // O_EXCL still cannot write outside the store.
+        // What the handle gives that a flag cannot: the resolver
+        // refuses the escape, so a caller that forgets O_EXCL still
+        // cannot write outside the store.
         let f = Fixture::new("plaincreate");
         std::os::unix::fs::symlink(
             f.base.join("outside/secret.md"),
