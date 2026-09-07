@@ -14,12 +14,11 @@ on:
   # A dry run. Every build job runs and every publish job is skipped, so
   # the whole thing can be exercised before a tag exists. A release that
   # first runs on tag day is a guess.
+  # A dry run, and only ever a dry run. Every build job runs and nothing
+  # is uploaded. A dispatch carries no tag, so it has no version to
+  # publish and no release to attach: publishing from one reached three
+  # registries and then failed with the version permanently taken.
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Upload to the registry. Leave false to build only."
-        type: boolean
-        default: false
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
@@ -44,7 +43,7 @@ jobs:
       # point one at any commit. Requiring the commit to be on main
       # means a release carries what main carries, and nothing else.
       - name: Check the tag is on main
-        if: github.event_name == 'push' || inputs.publish
+        if: github.event_name == 'push'
         run: |
           git fetch --quiet origin main
           if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
@@ -53,7 +52,7 @@ jobs:
           fi
 
       - name: Check the tag matches Cargo.toml
-        if: github.event_name == 'push' || inputs.publish
+        if: github.event_name == 'push'
         run: |
           manifest="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
           if [ "$manifest" != "${GITHUB_REF_NAME}" ]; then
@@ -99,7 +98,7 @@ jobs:
 
   publish-crate:
     needs: release
-    if: github.event_name == 'push' || inputs.publish
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       # `checkout` needs contents. A job that lists any permission
@@ -118,7 +117,7 @@ jobs:
 
   finalize:
     needs: publish-crate
-    if: github.event_name == 'push' || inputs.publish
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
