@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0
+
+This version is on `main` and was never described here. The entry is
+written after the fact, from the commits.
+
+### Added
+
+- A store renders as a book, behind the `book` feature. The pages, their
+  order, and the rendering live in `src/book.rs`.
+
+- A store can move, and can remove an empty directory. Both go through
+  the confined path resolver in `src/confined.rs`, so neither escapes the
+  store root.
+
+### Changed
+
+- Each tool owns its user config path, rather than sharing one. A tool
+  now names its own, and the store reads it from there.
+
+### Fixed
+
+- The escape assertions passed on `ENOTEMPTY` instead of on the refusal
+  they were written for, so a removal that failed for the wrong reason
+  still went green.
+
+- The mode is pinned at the site that uses it, and four guards gained
+  tests.
+
+- A URL rewrite spares a scheme it should not touch, and the scp form
+  requires its colon.
+
 ## 0.3.6
 
 ### Changed
