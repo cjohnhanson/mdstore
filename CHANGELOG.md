@@ -29,7 +29,8 @@
 ## 0.4.0
 
 This version reached `main` with no entry. The entry is written after the
-fact, from commit ea739c4.
+fact, from the commits it carries: ea739c4 for the config path, and
+b7c8454 for the book feature.
 
 ### Changed
 
