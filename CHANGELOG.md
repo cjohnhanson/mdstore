@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.5.0
+
+### Changed
+
+- `serialize_with` refuses a comment-fenced document whose frontmatter
+  closes the comment early, with `Error::CommentFenceEscape`. The error
+  names the line and its text, so a caller can find the value. An HTML
+  parser ends a comment on `-->` and on `--!>` alike, and both are
+  refused.
+
+  Such a value ends the comment where it sits. A renderer then shows the
+  rest of the frontmatter, and the closing delimiter, as text. The
+  document still round-tripped, because the parser reads a closing
+  delimiter on its own line, so nothing caught it later. The comment
+  fence exists so that no reader sees the frontmatter.
+
+- The package publishes as `mdstore-core`, because `mdstore` on
+  crates.io belongs to another author. The lib keeps the name consumers
+  import, so a dependency reads
+  `mdstore = { version = "0.5", package = "mdstore-core" }` and no source
+  changes.
+
+- `parse` and `parse_with` name the other form rather than reporting
+  nothing. A document written in the fence that was not asked for gave
+  `MissingFrontmatter`, the same answer as a file carrying no
+  frontmatter, so a caller could not tell them apart. It now gives
+  `Error::WrongFence`, which names the form found and points at
+  `parse_any`.
+
+### Added
+
+- A document records the fence its frontmatter used, and writes it back
+  the same way. `Fence` names the two forms, `parse_any` reads either,
+  and `serialize_with` writes the one asked for. A store that reads a
+  file with a comment fence no longer rewrites it as the other form.
+
+## 0.4.0
+
+This version reached `main` with no entry. The entry is written after the
+fact, from the commits it carries: ea739c4 for the config path, and
+b7c8454 for the book feature.
+
+### Changed
+
+- Each tool owns its user config path, and the three functions that read
+  or write it now take the tool. `config_path`, `UserConfig::load` and
+  `UserConfig::save_root` each gained a `ToolName` argument. Every caller
+  changes, which is what moves the minor field: under Cargo's 0.x rules
+  the minor field is the breaking slot.
+
+  One shared config path meant two tools on one machine read each
+  other's roots. `ToolName` names the owner, and each tool resolves to
+  its own file.
+
+### Added
+
+- `ToolName`, in `src/tool.rs`, naming the tool a config belongs to.
+
+- A store renders as a book, behind the `book` feature. `src/book.rs`
+  holds the pages, their order, and the rendering.
+
 ## 0.3.6
 
 ### Changed
@@ -123,8 +184,11 @@
 ## 0.3.0
 
 Breaking. A store now reads and writes through a capability handle, so
-the operating system refuses a path that leaves the store. A caller
-cannot forget a check, because there is no check to forget.
+a path that leaves the store is refused. A caller cannot forget a
+check, because there is no check to forget. The kernel enforces this
+on Linux and on FreeBSD; elsewhere, macOS included, cap-std resolves
+the path in userspace. See the `confined` module for what each
+platform gives.
 
 ### Breaking changes
 

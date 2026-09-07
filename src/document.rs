@@ -10,6 +10,84 @@ pub struct Document<T> {
     pub body: String,
 }
 
+/// Which delimiters wrap the frontmatter.
+///
+/// Two forms exist because two readers do. A tracker or a note store is
+/// read through its own tool, and `---` is the convention every other
+/// markdown tool knows. A documentation page is read on a git forge as
+/// well, and a forge renders a leading `---` as a rule followed by the
+/// raw keys. The comment form hides the same data from every markdown
+/// renderer, and no reader sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fence {
+    /// `---` … `---`. The default, and what `parse` and `serialize` use.
+    #[default]
+    Yaml,
+    /// `<!-- metadata` … `-->`. A markdown renderer hides it.
+    Comment,
+}
+
+impl Fence {
+    /// The form this one is not.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Yaml => Self::Comment,
+            Self::Comment => Self::Yaml,
+        }
+    }
+
+    /// The form's name, for a message.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Yaml => "yaml",
+            Self::Comment => "comment",
+        }
+    }
+
+    /// The opening delimiter, on its own line.
+    #[must_use]
+    pub fn open(self) -> &'static str {
+        match self {
+            Fence::Yaml => "---",
+            Fence::Comment => "<!-- metadata",
+        }
+    }
+
+    /// The closing delimiter, on its own line.
+    #[must_use]
+    pub fn close(self) -> &'static str {
+        match self {
+            Fence::Yaml => "---",
+            Fence::Comment => "-->",
+        }
+    }
+
+    /// Which form a document is written in, by its opening line.
+    ///
+    /// The comment form is tested first. `<!-- metadata` cannot start a
+    /// `---` document, so the order costs nothing and states the intent.
+    #[must_use]
+    pub fn detect(content: &str) -> Option<Fence> {
+        let content = content.trim_start();
+        [Fence::Comment, Fence::Yaml]
+            .into_iter()
+            .find(|&fence| strip_open(content, fence.open()).is_some())
+    }
+}
+
+/// Strip an opening delimiter and the newline that must follow it.
+///
+/// A delimiter with text after it on the same line is not a delimiter,
+/// so `----` never opens a `---` document.
+fn strip_open<'a>(content: &'a str, open: &str) -> Option<&'a str> {
+    let rest = content.strip_prefix(open)?;
+    rest.strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+        .or_else(|| rest.is_empty().then_some(""))
+}
+
 /// Split a document into its raw frontmatter text and its body.
 ///
 /// The frontmatter comes back as it was written, so a caller that must
@@ -17,31 +95,48 @@ pub struct Document<T> {
 /// asks for verbatim frontmatter, and a client compares what a listing
 /// gave against what a fetch gave.
 pub fn split(content: &str) -> Result<(&str, &str)> {
-    let (yaml, body) = split_fences(content)?;
+    split_with(content, Fence::Yaml)
+}
+
+/// Split a document written in one fence form.
+pub fn split_with(content: &str, fence: Fence) -> Result<(&str, &str)> {
+    let (yaml, body) = split_fences(content, fence)?;
     Ok((yaml.trim_end(), body))
 }
 
 /// Find the two fences and return the YAML between them and the body after.
 ///
-/// The closing fence is a line that holds `---` and nothing else. A
-/// `---` inside a value is text, not a fence: a title such as
+/// The closing fence is a line that holds the delimiter and nothing
+/// else. A `---` inside a value is text, not a fence: a title such as
 /// `Pooling --- causes stale reads` is a legal scalar, and cutting the
 /// frontmatter there loses every key after it.
 ///
 /// One helper serves both `split` and `parse`, so the verbatim text and
 /// the typed frontmatter can never disagree about where a document
 /// ends.
-fn split_fences(content: &str) -> Result<(&str, &str)> {
+fn split_fences(content: &str, fence: Fence) -> Result<(&str, &str)> {
     let content = content.trim();
-    let rest = content
-        .strip_prefix("---\n")
-        .or_else(|| content.strip_prefix("---\r\n"))
-        .or_else(|| (content == "---").then_some(""))
-        .ok_or(Error::MissingFrontmatter)?;
+    let rest = match strip_open(content, fence.open()) {
+        Some(rest) => rest,
+        None => {
+            // A document written in the other form is a different
+            // problem from a file that carries no frontmatter, and a
+            // caller can act on the difference.
+            let other = fence.other();
+            return Err(if strip_open(content, other.open()).is_some() {
+                Error::WrongFence {
+                    found: other.name(),
+                }
+            } else {
+                Error::MissingFrontmatter
+            });
+        }
+    };
 
+    let close = fence.close();
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
-        if line.trim_end() == "---" {
+        if line.trim_end() == close {
             return Ok((
                 &rest[..offset],
                 rest[offset + line.len()..].trim_start_matches('\n'),
@@ -54,7 +149,12 @@ fn split_fences(content: &str) -> Result<(&str, &str)> {
 
 /// Parse a `---`-fenced YAML frontmatter document into a typed frontmatter and body.
 pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
-    let (yaml, body) = split_fences(content)?;
+    parse_with(content, Fence::Yaml)
+}
+
+/// Parse a document written in one fence form.
+pub fn parse_with<T: DeserializeOwned>(content: &str, fence: Fence) -> Result<Document<T>> {
+    let (yaml, body) = split_fences(content, fence)?;
     let frontmatter: T = yaml_serde::from_str(yaml)?;
 
     Ok(Document {
@@ -63,16 +163,51 @@ pub fn parse<T: DeserializeOwned>(content: &str) -> Result<Document<T>> {
     })
 }
 
+/// Parse a document in whichever form it is written, and say which.
+///
+/// A caller that edits a document writes it back with the fence it came
+/// with. Without that, an edit silently converts the file, and every
+/// page in a documentation set changes form on its first edit.
+pub fn parse_any<T: DeserializeOwned>(content: &str) -> Result<(Document<T>, Fence)> {
+    let fence = Fence::detect(content).ok_or(Error::MissingFrontmatter)?;
+    Ok((parse_with(content, fence)?, fence))
+}
+
 /// Serialize a document back to `---`-fenced YAML frontmatter + body.
 ///
 /// Uses `yaml_serde` for frontmatter serialization, producing canonical YAML output.
 /// Tools that need specific field ordering or formatting should implement their own
 /// serializer on top of this.
 pub fn serialize<T: Serialize>(doc: &Document<T>) -> Result<String> {
+    serialize_with(doc, Fence::Yaml)
+}
+
+/// Serialize a document in one fence form.
+pub fn serialize_with<T: Serialize>(doc: &Document<T>, fence: Fence) -> Result<String> {
     let yaml = yaml_serde::to_string(&doc.frontmatter)?;
-    let mut out = String::from("---\n");
+    // A value holding the close marker ends the comment where it sits,
+    // and every following line becomes visible text. Refusing is the
+    // honest answer: escaping would need an unescape on the way back,
+    // and any other reader of the file would see the escape instead.
+    // The HTML parser ends a comment on `-->` and on `--!>` alike, so
+    // both leak the frontmatter this fence exists to hide. A reviewer
+    // demonstrated the second by rendering a page and reading the value.
+    if fence == Fence::Comment
+        && let Some((n, line)) = yaml
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("-->") || l.contains("--!>"))
+    {
+        return Err(Error::CommentFenceEscape {
+            line: n + 1,
+            text: line.trim().to_string(),
+        });
+    }
+    let mut out = String::from(fence.open());
+    out.push('\n');
     out.push_str(&yaml);
-    out.push_str("---\n");
+    out.push_str(fence.close());
+    out.push('\n');
     if !doc.body.is_empty() {
         out.push('\n');
         out.push_str(&doc.body);
@@ -80,10 +215,47 @@ pub fn serialize<T: Serialize>(doc: &Document<T>) -> Result<String> {
     }
     Ok(out)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_other_fence_is_named_rather_than_reported_as_missing() {
+        // A caller meeting MissingFrontmatter cannot tell a document in
+        // the other form from a file that is not a document. That was
+        // this change's own motivating case: a page in the comment
+        // form, read by a caller asking for yaml.
+        let comment = "<!-- metadata\ntitle: T\ntags: []\n-->\n\nbody";
+        let err = parse_with::<TestFrontmatter>(comment, Fence::Yaml).expect_err("refused");
+        assert!(
+            matches!(err, Error::WrongFence { found: "comment" }),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("parse_any"),
+            "the fix is named: {err}"
+        );
+
+        let yaml = "---\ntitle: T\ntags: []\n---\n\nbody";
+        let err = parse_with::<TestFrontmatter>(yaml, Fence::Comment).expect_err("refused");
+        assert!(
+            matches!(err, Error::WrongFence { found: "yaml" }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_document_still_reports_missing() {
+        // The other half of the distinction: no fence of either form.
+        for content in ["", "just a body", "# A heading\n\ntext"] {
+            let err = parse_with::<TestFrontmatter>(content, Fence::Yaml).expect_err("refused");
+            assert!(
+                matches!(err, Error::MissingFrontmatter),
+                "{content:?} gave {err:?}"
+            );
+        }
+    }
+
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -233,5 +405,153 @@ mod tests {
         let raw = "---\ntitle: T\ntags: []\n\nno closing fence\n";
         let err = parse::<TestFrontmatter>(raw).unwrap_err();
         assert!(matches!(err, Error::UnclosedFrontmatter), "{err:?}");
+    }
+
+    #[test]
+    fn parse_a_comment_fenced_document() {
+        let content =
+            "<!-- metadata\ntitle: \"What is Tisket?\"\ntags: []\n-->\n\n# What is Tisket?\n";
+        let doc: Document<TestFrontmatter> = parse_with(content, Fence::Comment).unwrap();
+        assert_eq!(doc.frontmatter.title, "What is Tisket?");
+        assert_eq!(doc.body, "# What is Tisket?");
+    }
+
+    #[test]
+    fn detect_names_the_form_a_document_is_written_in() {
+        assert_eq!(
+            Fence::detect("<!-- metadata\ntitle: t\n-->\n"),
+            Some(Fence::Comment)
+        );
+        assert_eq!(Fence::detect("---\ntitle: t\n---\n"), Some(Fence::Yaml));
+        assert_eq!(Fence::detect("no frontmatter here"), None);
+    }
+
+    #[test]
+    fn a_delimiter_with_text_after_it_opens_nothing() {
+        assert_eq!(Fence::detect("----\ntitle: t\n---\n"), None);
+        assert_eq!(Fence::detect("<!-- metadata x\ntitle: t\n-->\n"), None);
+    }
+
+    #[test]
+    fn parse_any_reports_the_fence_it_read() {
+        let comment = "<!-- metadata\ntitle: T\ntags: []\n-->\n\nBody.\n";
+        let (doc, fence) = parse_any::<TestFrontmatter>(comment).unwrap();
+        assert_eq!(fence, Fence::Comment);
+        assert_eq!(doc.frontmatter.title, "T");
+
+        let yaml = "---\ntitle: T\ntags: []\n---\n\nBody.\n";
+        let (_, fence) = parse_any::<TestFrontmatter>(yaml).unwrap();
+        assert_eq!(fence, Fence::Yaml);
+    }
+
+    #[test]
+    fn parse_any_refuses_a_document_with_no_frontmatter() {
+        assert!(parse_any::<TestFrontmatter>("just text").is_err());
+    }
+
+    #[test]
+    fn a_comment_fenced_document_survives_a_round_trip() {
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "Getting Started".into(),
+                tags: vec!["docs".into()],
+            },
+            body: "First, run the command.".into(),
+        };
+        let serialized = serialize_with(&doc, Fence::Comment).unwrap();
+        assert!(serialized.starts_with("<!-- metadata\n"));
+        assert!(serialized.contains("\n-->\n"));
+        let (parsed, fence) = parse_any::<TestFrontmatter>(&serialized).unwrap();
+        assert_eq!(fence, Fence::Comment);
+        assert_eq!(parsed.frontmatter, doc.frontmatter);
+        assert_eq!(parsed.body, doc.body);
+    }
+
+    #[test]
+    fn a_title_holding_the_comment_close_is_refused() {
+        // The round trip used to pass here, and that was the defect.
+        // The parser reads a closing delimiter on its own line, so it
+        // returned the value unharmed. A markdown renderer ends the
+        // comment at the `-->` inside the title, and shows the rest of
+        // the frontmatter and the closing delimiter as text. The whole
+        // point of this fence is that no reader sees the frontmatter.
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "Arrows --> and back".into(),
+                tags: vec![],
+            },
+            body: "body".into(),
+        };
+        let err = serialize_with(&doc, Fence::Comment).expect_err("refused");
+        assert!(
+            matches!(err, Error::CommentFenceEscape { .. }),
+            "got {err:?}"
+        );
+        // A caller fixes a value it can find, so the refusal names it.
+        let text = err.to_string();
+        assert!(
+            text.contains("Arrows"),
+            "the offending value is named: {text}"
+        );
+        assert!(text.contains("line 1"), "the line is named: {text}");
+    }
+
+    #[test]
+    fn both_html_comment_terminators_are_refused() {
+        // An HTML parser ends a comment on `-->` and on `--!>`. Only the
+        // first was refused, and the second leaked the frontmatter in a
+        // rendered page.
+        for marker in ["-->", "--!>", "a --> b", "x --!> y"] {
+            let doc = Document {
+                frontmatter: TestFrontmatter {
+                    title: marker.to_string(),
+                    tags: vec![],
+                },
+                body: "body".into(),
+            };
+            let err = serialize_with(&doc, Fence::Comment)
+                .expect_err(&format!("{marker} should be refused"));
+            assert!(
+                matches!(err, Error::CommentFenceEscape { .. }),
+                "{marker} gave {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_yaml_fence_takes_a_value_holding_the_comment_close() {
+        // Only the comment fence is harmed by it.
+        let doc = Document {
+            frontmatter: TestFrontmatter {
+                title: "Arrows --> and back".into(),
+                tags: vec![],
+            },
+            body: "body".into(),
+        };
+        let serialized = serialize_with(&doc, Fence::Yaml).expect("serialized");
+        let parsed: Document<TestFrontmatter> = parse_with(&serialized, Fence::Yaml).unwrap();
+        assert_eq!(parsed.frontmatter, doc.frontmatter);
+    }
+
+    #[test]
+    fn an_unclosed_comment_fence_is_an_error() {
+        let content = "<!-- metadata\ntitle: T\n";
+        assert!(parse_with::<TestFrontmatter>(content, Fence::Comment).is_err());
+    }
+
+    #[test]
+    fn each_fence_refuses_the_other_form() {
+        let comment = "<!-- metadata\ntitle: T\ntags: []\n-->\n";
+        assert!(parse_with::<TestFrontmatter>(comment, Fence::Yaml).is_err());
+        let yaml = "---\ntitle: T\ntags: []\n---\n";
+        assert!(parse_with::<TestFrontmatter>(yaml, Fence::Comment).is_err());
+    }
+
+    #[test]
+    fn split_with_gives_the_comment_frontmatter_as_written() {
+        let content = "<!-- metadata\nname: probe\ndescription: \"a: b\"\n-->\n\nBody here.\n";
+        let (frontmatter, body) = split_with(content, Fence::Comment).unwrap();
+        assert_eq!(frontmatter, "name: probe\ndescription: \"a: b\"");
+        assert_eq!(body, "Body here.");
     }
 }
