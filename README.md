@@ -23,7 +23,7 @@ Or in `Cargo.toml`:
 
 ```toml
 [dependencies]
-mdstore = { version = "0.5", package = "mdstore-core" }
+mdstore = { version = "0.6", package = "mdstore-core" }
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -178,7 +178,7 @@ configuration, the access mode, the document URI form, and the content
 digest.
 
 ```toml
-mdstore = { version = "0.5", package = "mdstore-core", features = ["mcp"] }
+mdstore = { version = "0.6", package = "mdstore-core", features = ["mcp"] }
 ```
 
 The feature is off by default, so a consumer that builds only a CLI
@@ -192,7 +192,7 @@ It is off by default so CLIs and MCP servers do not compile the
 terminal stack.
 
 ```toml
-mdstore = { version = "0.5", package = "mdstore-core", features = ["tui"] }
+mdstore = { version = "0.6", package = "mdstore-core", features = ["tui"] }
 ```
 
 `keymap::keys_path(tool)` gives `~/.config/<tool>/keys.yml`. The file
