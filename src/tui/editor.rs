@@ -7,10 +7,12 @@
 //! prefixes, incremental search, and an echo line.
 //!
 //! The editor never touches a store. [`Editor::handle`] returns
-//! [`Outcome::Save`] with the whole text, and the tool writes it through
-//! its own core operation, so frontmatter, provenance, and refusals stay
-//! in the tool. Before writing, the tool compares the document on disk
-//! with [`Editor::original`] and refuses when someone else changed it.
+//! [`Outcome::Save`] (keep editing) or [`Outcome::Finish`] (close) with
+//! the whole text, and the tool writes it through its own core
+//! operation, so frontmatter, provenance, and refusals stay in the tool.
+//! Before writing, the tool compares the document on disk with
+//! [`Editor::original`] and refuses when someone else changed it. After
+//! a save that keeps the editor open, the tool calls [`Editor::saved`].
 //!
 //! A compound command (yank-pop, transpose, a case change) is several
 //! widget edits, and the widget has no way to group its undo history, so
@@ -70,12 +72,14 @@ pub enum EditAction {
     IsearchBackward,
     KeyboardQuit,
     Save,
+    Finish,
     Cancel,
 }
 
 impl Command for EditAction {
     const ALL: &'static [Self] = &[
         Self::Save,
+        Self::Finish,
         Self::Cancel,
         Self::KeyboardQuit,
         Self::ForwardChar,
@@ -160,6 +164,7 @@ impl Command for EditAction {
             Self::IsearchBackward => "isearch-backward",
             Self::KeyboardQuit => "keyboard-quit",
             Self::Save => "save-buffer",
+            Self::Finish => "with-editor-finish",
             Self::Cancel => "kill-buffer",
         }
     }
@@ -192,7 +197,7 @@ impl Command for EditAction {
             Self::UpcaseWord => "upper-case the next word",
             Self::DowncaseWord => "lower-case the next word",
             Self::CapitalizeWord => "capitalise the next word",
-            Self::Indent => "insert a tab",
+            Self::Indent => "indent with spaces to the next tab stop",
             Self::Undo => "undo",
             Self::Redo => "redo",
             Self::KillRegion => "kill the region",
@@ -205,7 +210,8 @@ impl Command for EditAction {
             Self::IsearchForward => "search forward as you type",
             Self::IsearchBackward => "search backward as you type",
             Self::KeyboardQuit => "cancel the region, a prefix, or a search",
-            Self::Save => "save and close",
+            Self::Save => "save and keep editing",
+            Self::Finish => "save and close",
             Self::Cancel => "close without saving",
         }
     }
@@ -282,7 +288,8 @@ pub const SECTION: Section<EditAction> = Section {
     ],
     emacs: &[
         ("C-x C-s", E::Save),
-        ("C-c C-c", E::Save),
+        ("C-c C-c", E::Finish),
+        ("C-x #", E::Finish),
         ("C-x C-c", E::Cancel),
         ("C-x k", E::Cancel),
         ("C-c C-k", E::Cancel),
@@ -348,9 +355,14 @@ pub const SECTION: Section<EditAction> = Section {
 pub enum Outcome {
     /// Keep the editor open.
     Continue,
-    /// Write this text through the tool's core, then close the editor,
-    /// or keep it open with [`Editor::set_message`] on a refusal.
+    /// Write this text through the tool's core and keep the editor open,
+    /// as Emacs's save-buffer does. Then call [`Editor::saved`], or
+    /// [`Editor::set_message`] with the refusal.
     Save(String),
+    /// Write this text and close the editor, as with-editor's finish
+    /// does. On a refusal, keep the editor open with
+    /// [`Editor::set_message`].
+    Finish(String),
     /// Close the editor and write nothing.
     Cancel,
 }
@@ -363,6 +375,7 @@ enum Last {
     Other,
     Kill,
     Yank { start: Pos, end: Pos },
+    SetMark,
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +435,44 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// The position at a character offset into the lines joined by `\n`.
+fn position(lines: &[String], mut at: usize) -> Pos {
+    for (row, line) in lines.iter().enumerate() {
+        let len = line.chars().count();
+        if at <= len {
+            return (row, at);
+        }
+        at -= len + 1;
+    }
+    let last = lines.len().saturating_sub(1);
+    (last, lines.get(last).map_or(0, |l| l.chars().count()))
+}
+
+/// Where a mark at `mark` goes after an edit at `start` changed the
+/// text's length by `delta`, as an Emacs marker moves: text inserted
+/// before it pushes it on, text inserted at it leaves it, and a
+/// deletion around it pulls it to the deletion's start.
+fn shift_mark(mark: usize, start: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        if start < mark {
+            mark + delta.unsigned_abs()
+        } else {
+            mark
+        }
+    } else {
+        let removed = delta.unsigned_abs();
+        if mark >= start + removed {
+            mark - removed
+        } else if mark > start {
+            start
+        } else {
+            mark
+        }
+    }
+}
+
+/// The widget's jump takes 16-bit coordinates, so a position past line
+/// or column 65,535 is clamped there.
 fn jump_to((row, col): Pos) -> CursorMove {
     let row = u16::try_from(row).unwrap_or(u16::MAX);
     let col = u16::try_from(col).unwrap_or(u16::MAX);
@@ -466,8 +517,9 @@ impl Editor {
         &self.original
     }
 
-    /// The text now. A body ends with one newline unless it is empty; a
-    /// prompt has none.
+    /// The text now. A body ends with exactly one newline unless it is
+    /// empty, so blank lines at the end are dropped; a prompt has none.
+    /// Lines end with `\n`, so a body opened with `\r\n` saves with `\n`.
     #[must_use]
     pub fn text(&self) -> String {
         let text = joined(self.textarea.lines());
@@ -489,6 +541,14 @@ impl Editor {
         self.text() != opened.text()
     }
 
+    /// Record that the tool wrote the text: it becomes the text the
+    /// editor compares against, so closing asks nothing until the next
+    /// change.
+    pub fn saved(&mut self) {
+        self.original = self.text();
+        self.message = Some("Saved".into());
+    }
+
     /// Show a message on the echo line, such as a refused save.
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.message = Some(message.into());
@@ -504,7 +564,10 @@ impl Editor {
                 let dir = if s.forward { "" } else { " backward" };
                 Some(format!("{failing}I-search{dir}: {}", s.query))
             }
-            Mode::ConfirmDiscard => Some("Discard changes? (y or n)".to_string()),
+            Mode::ConfirmDiscard => Some(match &self.message {
+                Some(m) => format!("{m}  Discard changes? (y or n)"),
+                None => "Discard changes? (y or n)".to_string(),
+            }),
             Mode::Edit => self.keymap.pending().or_else(|| self.message.clone()),
         }
     }
@@ -534,7 +597,12 @@ impl Editor {
 
     /// Handle one key press.
     pub fn handle(&mut self, event: &KeyEvent) -> Outcome {
-        match self.mode {
+        let lines = self.textarea.lines();
+        let len_before = joined(lines).chars().count();
+        let cursor_before = offset(lines, self.cursor());
+        let mark_before = self.mark;
+        let mark_offset = mark_before.map(|m| offset(lines, m));
+        let outcome = match self.mode {
             Mode::ConfirmDiscard => self.confirm(event),
             Mode::Search(_) => self.search_key(event),
             Mode::Edit => {
@@ -544,7 +612,19 @@ impl Editor {
                 }
                 self.dispatch(lookup)
             }
+        };
+        // Keep the mark on the same text across an edit, unless the
+        // command set the mark itself.
+        if let (Some(mark), true) = (mark_offset, self.mark == mark_before) {
+            let lines = self.textarea.lines();
+            let len_after = joined(lines).chars().count();
+            if len_after != len_before {
+                let start = cursor_before.min(offset(lines, self.cursor()));
+                let delta = len_after as isize - len_before as isize;
+                self.mark = Some(position(lines, shift_mark(mark, start, delta)));
+            }
         }
+        outcome
     }
 
     fn dispatch(&mut self, lookup: Lookup<EditAction>) -> Outcome {
@@ -576,6 +656,11 @@ impl Editor {
         let Some(key) = super::key::Key::from_event(event) else {
             return Outcome::Continue;
         };
+        let quit = self
+            .keymap
+            .bindings()
+            .iter()
+            .any(|b| b.action == E::KeyboardQuit && b.keys == [key]);
         match key.printable() {
             Some('y') => Outcome::Cancel,
             Some('n') => {
@@ -583,12 +668,15 @@ impl Editor {
                 self.message = None;
                 Outcome::Continue
             }
-            _ if key.to_string() == "C-g" => {
+            _ if quit || key == super::key::C_G => {
                 self.mode = Mode::Edit;
                 self.message = Some("Quit".into());
                 Outcome::Continue
             }
-            _ => Outcome::Continue,
+            _ => {
+                self.message = Some("Please answer y or n.".into());
+                Outcome::Continue
+            }
         }
     }
 
@@ -649,6 +737,8 @@ impl Editor {
     fn kill(&mut self, direction: Direction, delete: impl FnOnce(&mut TextArea<'static>) -> bool) {
         let before: Vec<char> = joined(self.textarea.lines()).chars().collect();
         if !delete(&mut self.textarea) {
+            // A kill that removed nothing still breaks a run of kills.
+            self.last = Last::Other;
             return;
         }
         let after_len = joined(self.textarea.lines()).chars().count();
@@ -692,7 +782,7 @@ impl Editor {
             E::BackwardParagraph => ta.move_cursor(CursorMove::ParagraphBack),
             E::Newline => {
                 if self.single_line {
-                    return Outcome::Save(self.text());
+                    return Outcome::Finish(self.text());
                 }
                 ta.cancel_selection();
                 ta.insert_newline();
@@ -765,8 +855,19 @@ impl Editor {
                 if !self.select_region() {
                     return Outcome::Continue;
                 }
+                // Point before the mark kills backward, so a run of kills
+                // prepends, as in Emacs.
+                let point_first = self
+                    .textarea
+                    .selection_range()
+                    .is_some_and(|(start, _)| start == self.cursor());
+                let direction = if point_first {
+                    Direction::Backward
+                } else {
+                    Direction::Forward
+                };
                 self.last = previous;
-                self.kill(Direction::Forward, TextArea::cut);
+                self.kill(direction, TextArea::cut);
             }
             E::CopyRegion => {
                 if !self.select_region() {
@@ -781,9 +882,16 @@ impl Editor {
             E::YankPop => self.yank_pop(previous),
             E::SetMark => {
                 ta.cancel_selection();
-                ta.start_selection();
-                self.mark = Some(self.cursor());
-                self.message = Some("Mark set".into());
+                // A second C-SPC straight after the first ends the region
+                // and keeps the mark, as in Emacs.
+                if previous == Last::SetMark {
+                    self.message = Some("Mark deactivated".into());
+                } else {
+                    ta.start_selection();
+                    self.mark = Some(self.cursor());
+                    self.message = Some("Mark set".into());
+                    self.last = Last::SetMark;
+                }
             }
             E::ExchangePointAndMark => match self.mark {
                 Some(mark) => {
@@ -821,6 +929,7 @@ impl Editor {
                 self.message = Some("Quit".into());
             }
             E::Save => return Outcome::Save(self.text()),
+            E::Finish => return Outcome::Finish(self.text()),
             E::Cancel => {
                 if self.is_dirty() {
                     self.mode = Mode::ConfirmDiscard;
@@ -916,15 +1025,20 @@ impl Editor {
 
     fn case_word(&mut self, change: impl Fn(&str) -> String) {
         self.textarea.cancel_selection();
-        let (row, col) = self.cursor();
+        // The next word, on this line or a later one, as forward-word
+        // finds it.
+        let (row, end) = self.word_target(Direction::Forward);
         let line: Vec<char> = self.textarea.lines()[row].chars().collect();
-        let col = col.min(line.len());
-        let start = col + line[col..].iter().take_while(|c| !is_word(**c)).count();
-        let len = line[start..].iter().take_while(|c| is_word(**c)).count();
+        let len = line[..end]
+            .iter()
+            .rev()
+            .take_while(|c| is_word(**c))
+            .count();
         if len == 0 {
             return;
         }
-        let word: String = line[start..start + len].iter().collect();
+        let start = end - len;
+        let word: String = line[start..end].iter().collect();
         self.jump((row, start));
         self.textarea.delete_str(len);
         self.textarea.insert_str(change(&word));
@@ -1023,6 +1137,10 @@ impl Editor {
             .set_search_pattern(Self::pattern(&s.query))
             .is_err()
         {
+            // An escaped query always compiles; if one ever does not,
+            // the search reports a failure rather than standing still.
+            s.failing = true;
+            self.set_search(s);
             return;
         }
         self.jump(from);

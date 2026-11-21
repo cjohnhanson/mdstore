@@ -186,28 +186,55 @@ does not pull in the server stack.
 
 ## Terminal UI
 
-The `tui` feature provides key bindings and a markdown body editor in `mdstore::tui`.
-It is off by default so CLIs and MCP servers do not compile the terminal stack.
+The optional `tui` feature provides key bindings and a markdown body
+editor in `mdstore::tui`. The tool owns the terminal and event loop.
+It is off by default so CLIs and MCP servers do not compile the
+terminal stack.
 
 ```toml
 mdstore = { version = "0.5", package = "mdstore-core", features = ["tui"] }
 ```
 
-`keymap` reads `~/.config/<tool>/keys.yml` and overlays its bindings on the
-`default` or `emacs` preset. Each tool passes its own path. Keys use Emacs notation.
+`keymap::keys_path(tool)` gives `~/.config/<tool>/keys.yml`. The file
+overrides the `default` or `emacs` preset. An absent file uses `default`.
+Keys use Emacs notation, with one space between keys in a sequence.
 
 ```yaml
 format: 1
-preset: emacs        # default | emacs
+preset: emacs
 editor:
-  "C-c C-c": save-buffer
-  "M-q": unbound     # removes the preset's binding
+  "M-y": unbound       # remove yank-pop
+  "C-c C-s": save-buffer
 list:
   "C-x C-c": quit
 ```
 
-`editor` uses the same file's `editor` section. `Editor::handle` returns `Outcome::Save(text)`.
-The tool compares the document on disk with `Editor::original()` before writing through its own operation.
+Other sections and their commands, such as `list` and `quit`, belong to
+the tool. A tool refuses a section it does not read. Commands in the
+`editor` section use `EditAction::name`, mostly Emacs command names.
+An unknown command is refused with the valid names. Binding a preset
+prefix such as `C-c` replaces all preset bindings under it, as in Emacs.
+
+Load the file and build an editor on `body: &str`:
+
+```rust
+use mdstore::tui::{editor, keymap, Editor, KeysFile};
+let tool = mdstore::ToolName::new("notes").unwrap();
+let path = keymap::keys_path(tool).ok_or("no home directory")?;
+let file = KeysFile::load(&path)?;
+file.check_sections(&["editor", "list"])?;
+let keymap = file.keymap(&editor::SECTION)?;
+let editor = Editor::new(body, keymap);
+```
+
+`Editor::handle` returns `Outcome::Save(text)` for `save-buffer`
+(`C-x C-s` in the Emacs preset): the tool writes, calls
+`Editor::saved()`, and keeps editing. `Outcome::Finish(text)` asks the
+tool to write and close (`with-editor-finish`, `C-c C-c` or `C-x #`).
+`Outcome::Cancel` closes without writing. Before either write, the tool
+compares the document on disk with `Editor::original()` and refuses
+if it changed. Writes go through the tool's own core operation.
+A refused write keeps the editor open.
 
 ## Related
 

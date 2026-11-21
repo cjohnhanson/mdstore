@@ -58,10 +58,103 @@ fn typing_inserts_and_saving_returns_the_text_with_one_newline() {
 }
 
 #[test]
-fn the_message_mode_keys_save_and_cancel() {
+fn the_message_mode_keys_finish_and_cancel() {
     let mut ed = emacs("a\n");
-    assert_eq!(press(&mut ed, "C-c C-c"), Outcome::Save("a\n".into()));
+    assert_eq!(press(&mut ed, "C-c C-c"), Outcome::Finish("a\n".into()));
+    assert_eq!(press(&mut ed, "C-x #"), Outcome::Finish("a\n".into()));
     assert_eq!(press(&mut ed, "C-c C-k"), Outcome::Cancel);
+}
+
+#[test]
+fn save_keeps_editing_and_saved_resets_the_change_check() {
+    let mut ed = emacs("a\n");
+    typed(&mut ed, "b");
+    assert_eq!(press(&mut ed, "C-x C-s"), Outcome::Save("ba\n".into()));
+    assert!(ed.is_dirty(), "nothing is saved until the tool says so");
+    ed.saved();
+    assert!(!ed.is_dirty());
+    assert_eq!(ed.echo().as_deref(), Some("Saved"));
+    assert_eq!(press(&mut ed, "C-x k"), Outcome::Cancel);
+}
+
+#[test]
+fn the_mark_moves_with_an_edit_before_it() {
+    let mut ed = emacs("hello world\n");
+    press(&mut ed, "C-f C-f C-f C-f C-f C-SPC C-a");
+    typed(&mut ed, "XY");
+    press(&mut ed, "C-w");
+    assert_eq!(ed.text(), "XY world\n");
+    press(&mut ed, "C-e C-y");
+    assert_eq!(ed.text(), "XY worldhello\n");
+}
+
+#[test]
+fn a_deletion_before_the_mark_pulls_it_back() {
+    let mut ed = emacs("abcdef\n");
+    press(&mut ed, "C-f C-f C-f C-SPC C-g C-a C-d C-d");
+    assert_eq!(ed.text(), "cdef\n");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 1));
+}
+
+#[test]
+fn a_deletion_around_the_mark_moves_it_to_the_deletion() {
+    let mut ed = emacs("abcdef\n");
+    press(&mut ed, "C-f C-f C-SPC C-g C-a C-k");
+    assert_eq!(ed.text(), "");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 0));
+}
+
+#[test]
+fn set_mark_twice_ends_the_region_and_keeps_the_mark() {
+    let mut ed = emacs("abc\n");
+    press(&mut ed, "C-SPC C-SPC");
+    assert_eq!(ed.echo().as_deref(), Some("Mark deactivated"));
+    press(&mut ed, "C-e");
+    typed(&mut ed, "!");
+    assert_eq!(ed.text(), "abc!\n", "no region to replace");
+    press(&mut ed, "C-w");
+    assert_eq!(ed.text(), "", "the mark still bounds a kill");
+}
+
+#[test]
+fn killing_a_region_backward_prepends_to_the_kill() {
+    let mut ed = emacs("ab cd\n");
+    press(&mut ed, "C-e C-SPC M-b C-w M-DEL");
+    assert_eq!(ed.text(), "");
+    press(&mut ed, "C-y");
+    assert_eq!(ed.text(), "ab cd\n");
+}
+
+#[test]
+fn a_kill_that_removes_nothing_breaks_a_run_of_kills() {
+    let mut ed = emacs("ab\n");
+    press(&mut ed, "C-f C-k C-k M-DEL");
+    assert_eq!(ed.text(), "");
+    press(&mut ed, "C-y");
+    assert_eq!(ed.text(), "a\n");
+    press(&mut ed, "M-y");
+    assert_eq!(ed.text(), "b\n");
+}
+
+#[test]
+fn a_case_command_reaches_the_next_word_on_a_later_line() {
+    let mut ed = emacs("x.\nword\n");
+    press(&mut ed, "C-e M-u");
+    assert_eq!(ed.text(), "x.\nWORD\n");
+}
+
+#[test]
+fn the_discard_question_asks_again_on_another_key() {
+    let mut ed = emacs("a\n");
+    typed(&mut ed, "b");
+    press(&mut ed, "C-x k");
+    press(&mut ed, "q");
+    assert_eq!(
+        ed.echo().as_deref(),
+        Some("Please answer y or n.  Discard changes? (y or n)")
+    );
 }
 
 #[test]
@@ -379,7 +472,7 @@ fn a_single_line_editor_saves_on_ret_and_flattens_a_yank() {
     let mut ed = Editor::single_line("", Keymap::preset(&SECTION, Preset::Emacs));
     ed.ring.kill("a\nb".into(), Direction::Forward, false);
     press(&mut ed, "C-y");
-    assert_eq!(press(&mut ed, "RET"), Outcome::Save("a b".into()));
+    assert_eq!(press(&mut ed, "RET"), Outcome::Finish("a b".into()));
 }
 
 #[test]
@@ -412,7 +505,8 @@ fn every_command_has_a_key_in_each_preset() {
                 || preset == Preset::Default
                     && matches!(
                         action,
-                        E::OpenLine
+                        E::Finish
+                            | E::OpenLine
                             | E::TransposeChars
                             | E::UpcaseWord
                             | E::DowncaseWord
@@ -453,4 +547,36 @@ fn snapshot_discard_question() {
     typed(&mut ed, "x");
     press(&mut ed, "C-x k");
     insta::assert_snapshot!(screen(&ed));
+}
+
+fn single(text: &str) -> Editor {
+    Editor::single_line(text, Keymap::preset(&SECTION, Preset::Emacs))
+}
+
+#[test]
+fn open_line_does_nothing_in_a_prompt() {
+    let mut ed = single("ab");
+    press(&mut ed, "C-f C-o");
+    assert_eq!(press(&mut ed, "RET"), Outcome::Finish("ab".into()));
+}
+
+#[test]
+fn a_prompt_draws_no_echo_row() {
+    let mut ed = single("query");
+    press(&mut ed, "C-x");
+    assert_eq!(ed.echo().as_deref(), Some("C-x-"));
+    let mut terminal = Terminal::new(TestBackend::new(12, 2)).unwrap();
+    terminal.draw(|f| f.render_widget(&ed, f.area())).unwrap();
+    let drawn = terminal.backend().to_string();
+    assert!(!drawn.contains("C-x-"), "{drawn}");
+    assert!(drawn.contains("query"), "{drawn}");
+}
+
+#[test]
+fn an_empty_search_keeps_the_last_search() {
+    let mut ed = emacs("q q q\n");
+    press(&mut ed, "C-s");
+    typed(&mut ed, "q");
+    press(&mut ed, "RET C-s RET C-s C-s");
+    assert_eq!(ed.cursor(), (0, 3));
 }

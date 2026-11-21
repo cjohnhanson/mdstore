@@ -57,6 +57,15 @@ const BRACKETED: &[(&str, KeyCode)] = &[
 /// The modifiers, in the order Emacs writes them.
 const MODIFIERS: &[char] = &['C', 'M', 'S', 's'];
 
+/// `C-g`, which cancels a prefix, a region, or a question in every preset.
+pub(crate) const C_G: Key = Key {
+    code: KeyCode::Char('g'),
+    ctrl: true,
+    meta: false,
+    shift: false,
+    super_key: false,
+};
+
 impl Key {
     /// A key with no modifiers.
     #[must_use]
@@ -185,10 +194,18 @@ impl std::str::FromStr for Key {
         }
         key.code = parse_name(token, rest)?;
         if let KeyCode::Char(c) = key.code {
-            if key.shift {
+            if key.shift && !key.ctrl {
                 return Err(err(format!(
                     "{token}: shift on a character is the character itself; write {}",
                     c.to_uppercase()
+                )));
+            }
+            if key.ctrl && (key.shift || c.is_uppercase()) {
+                return Err(err(format!(
+                    "{token}: a terminal sends Ctrl with a letter in lower case and \
+                     cannot add shift to it; write {}{}",
+                    token[..token.len() - c.len_utf8()].replace("S-", ""),
+                    c.to_lowercase()
                 )));
             }
             if key.ctrl {
@@ -436,10 +453,14 @@ mod tests {
             ("M-C-x", "order"),
             ("C-C-x", "order"),
             ("S-a", "write A"),
+            ("C-X", "write C-x"),
+            ("C-S-x", "write C-x"),
+            ("C-M-X", "write C-M-x"),
             ("C-?", "DEL"),
             ("A-x", "cannot send"),
             ("H-x", "cannot send"),
             ("Return", "unknown key"),
+            ("<f0>", "unknown key <f0>"),
         ] {
             let e = s.parse::<Key>().expect_err(s).0;
             assert!(e.contains(says), "{s}: {e}");

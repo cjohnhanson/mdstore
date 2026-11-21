@@ -9,9 +9,11 @@
   ring, mark and region, `C-g`, `C-x` prefixes, `M-` keys, and
   incremental search. Each tool supplies its keys file path; no
   environment variable selects it. An absent file uses the default
-  preset. A malformed file produces an error naming the file,
-  section, and key. The tool owns the terminal and event loop,
-  and the editor returns text to save without touching a store.
+  preset. Errors name the file and, where applicable, the section
+  and key. The tool owns the terminal and event loop. The editor
+  returns text to save and keep editing or to save and close, or
+  signals cancellation without a write. The tool writes through
+  its own core operation.
 
 ## 0.5.0
 

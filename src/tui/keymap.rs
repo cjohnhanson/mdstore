@@ -14,23 +14,24 @@
 //! format: 1
 //! preset: emacs        # default | emacs
 //! editor:
-//!   "C-c C-c": save-buffer
-//!   "M-q": unbound     # removes the preset's binding
-//! list:
+//!   "M-y": unbound       # removes the preset's yank-pop
+//!   "C-c C-s": save-buffer
+//! list:                  # a tool's own section
 //!   "C-x C-c": quit
 //! ```
 //!
-//! Each tool reads its own file, `~/.config/<tool>/keys.yml`, beside the
-//! user config `~/.config/<tool>/config.yml` (see `userconfig`). It is a
-//! separate file because the user config refuses unknown fields. The
-//! caller passes the path, so no environment variable chooses it.
+//! Each tool reads its own file, `~/.config/<tool>/keys.yml` (see
+//! [`keys_path`]), beside the user config `~/.config/<tool>/config.yml`
+//! (see `userconfig`). It is a separate file because the user config
+//! refuses unknown fields. The caller passes the path to
+//! [`KeysFile::load`], so no environment variable chooses it.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
-use serde::Deserialize;
+use yaml_serde::Value;
 
 use super::key::{Key, parse_sequence, sequence_to_string};
 
@@ -127,12 +128,13 @@ pub enum KeymapError {
         section: String,
         reason: String,
     },
-    #[error("{path}: {section}: {keys:?}: unknown command {action:?}")]
+    #[error("{path}: {section}: {keys:?}: unknown command {action:?}; the commands are {known}")]
     Action {
         path: PathBuf,
         section: String,
         keys: String,
         action: String,
+        known: String,
     },
     #[error(
         "{path}: {section}: {keys:?} starts {longer:?}, so {longer:?} could never be typed; \
@@ -181,13 +183,7 @@ pub struct Keymap<A> {
     meta_next: bool,
 }
 
-const C_G: Key = Key {
-    code: KeyCode::Char('g'),
-    ctrl: true,
-    meta: false,
-    shift: false,
-    super_key: false,
-};
+use super::key::C_G;
 
 fn is_prefix(short: &[Key], long: &[Key]) -> bool {
     short.len() < long.len() && long.starts_with(short)
@@ -346,11 +342,19 @@ impl<A: Command> Keymap<A> {
                 None
             } else {
                 let found = A::ALL.iter().copied().find(|a| a.name() == action_name);
-                Some(found.ok_or_else(|| KeymapError::Action {
-                    path: path.to_path_buf(),
-                    section: section.to_string(),
-                    keys: keys_text.clone(),
-                    action: action_name.clone(),
+                Some(found.ok_or_else(|| {
+                    KeymapError::Action {
+                        path: path.to_path_buf(),
+                        section: section.to_string(),
+                        keys: keys_text.clone(),
+                        action: action_name.clone(),
+                        known: A::ALL
+                            .iter()
+                            .map(|a| a.name())
+                            .chain([UNBOUND])
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    }
                 })?)
             };
             user.push((keys, action, keys_text));
@@ -388,6 +392,15 @@ impl<A: Command> Keymap<A> {
     }
 }
 
+/// The fixed path of the named tool's keys file,
+/// `~/.config/<tool>/keys.yml`, beside its user config. The home comes
+/// from the passwd database, as the user config's does, never from an
+/// environment variable.
+#[must_use]
+pub fn keys_path(tool: crate::tool::ToolName<'_>) -> Option<PathBuf> {
+    crate::userconfig::passwd_home().map(|home| home.join(format!(".config/{tool}/keys.yml")))
+}
+
 /// A user's keys file, read and checked for shape.
 #[derive(Debug, Clone, Default)]
 pub struct KeysFile {
@@ -396,12 +409,14 @@ pub struct KeysFile {
     sections: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Entry {
-    Number(u64),
-    Text(String),
-    Section(BTreeMap<String, String>),
+/// A YAML scalar as a key or a command name, if it is one.
+fn as_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 impl KeysFile {
@@ -437,38 +452,87 @@ impl KeysFile {
         if text.trim().is_empty() {
             return Ok(file);
         }
-        let top: BTreeMap<String, Entry> =
-            yaml_serde::from_str(text).map_err(|source| KeymapError::Yaml {
-                path: path_buf.clone(),
-                source,
-            })?;
-        for (name, entry) in top {
-            match (name.as_str(), entry) {
-                ("format", Entry::Number(n)) => {
-                    if n > 1 {
+        // Read as a plain YAML value and walk it by hand, so every
+        // refusal names the field, section, and key it is about.
+        let top: Value = yaml_serde::from_str(text).map_err(|source| KeymapError::Yaml {
+            path: path_buf.clone(),
+            source,
+        })?;
+        let top = match top {
+            Value::Null => return Ok(file),
+            Value::Mapping(m) => m,
+            _ => return Err(field("the file", "a map of settings and sections")),
+        };
+        for (name, value) in top {
+            let Some(name) = as_text(&name) else {
+                return Err(field("a top-level key", "a name"));
+            };
+            match name.as_str() {
+                "format" => match value.as_u64() {
+                    Some(n) if n > 1 => {
                         return Err(KeymapError::Format {
                             path: path_buf,
                             found: n,
                         });
                     }
-                }
-                ("format", _) => return Err(field("format", "a number")),
-                ("preset", Entry::Text(p)) => {
+                    Some(_) => {}
+                    None => return Err(field("format", "a number")),
+                },
+                "preset" => {
+                    let Value::String(p) = value else {
+                        return Err(field("preset", "default or emacs"));
+                    };
                     file.preset = Preset::parse(&p).ok_or_else(|| KeymapError::Preset {
                         path: path_buf.clone(),
                         name: p,
                     })?;
                 }
-                ("preset", _) => return Err(field("preset", "default or emacs")),
-                (_, Entry::Section(entries)) => {
+                _ => {
+                    let entries = Self::section(&path_buf, &name, value)?;
                     file.sections.insert(name, entries);
-                }
-                (other, _) => {
-                    return Err(field(other, "a map of key sequences to commands"));
                 }
             }
         }
         Ok(file)
+    }
+
+    /// One section: key sequences to command names. An empty section,
+    /// such as one whose lines are all commented out, binds nothing.
+    fn section(
+        path: &Path,
+        name: &str,
+        value: Value,
+    ) -> Result<BTreeMap<String, String>, KeymapError> {
+        let map = match value {
+            Value::Null => return Ok(BTreeMap::new()),
+            Value::Mapping(m) => m,
+            _ => {
+                return Err(KeymapError::Field {
+                    path: path.to_path_buf(),
+                    field: name.to_string(),
+                    expected: "a map of key sequences to commands",
+                });
+            }
+        };
+        let mut entries = BTreeMap::new();
+        for (keys, action) in map {
+            let keys = as_text(&keys).ok_or_else(|| KeymapError::Key {
+                path: path.to_path_buf(),
+                section: name.to_string(),
+                reason: "a key sequence must be text, such as \"C-x C-s\"".to_string(),
+            })?;
+            let Value::String(action) = action else {
+                return Err(KeymapError::Key {
+                    path: path.to_path_buf(),
+                    section: name.to_string(),
+                    reason: format!(
+                        "{keys:?}: bind a command name, or {UNBOUND} to remove the binding"
+                    ),
+                });
+            };
+            entries.insert(keys, action);
+        }
+        Ok(entries)
     }
 
     /// The preset the file chose.
@@ -644,6 +708,56 @@ mod tests {
     }
 
     #[test]
+    fn c_g_after_esc_cancels_the_meta_prefix() {
+        let mut map = file("preset: emacs").unwrap().keymap(&SECTION).unwrap();
+        assert_eq!(map.feed(&esc()), Lookup::Pending);
+        assert_eq!(map.feed(&ctrl('g')), Lookup::Cancelled);
+        assert_eq!(map.pending(), None);
+    }
+
+    #[test]
+    fn a_meta_prefix_after_a_prefix_echoes_both() {
+        let text = "preset: emacs\nlist:\n  C-x M-a: help\n";
+        let mut map = file(text).unwrap().keymap(&SECTION).unwrap();
+        map.feed(&ctrl('x'));
+        assert_eq!(map.feed(&esc()), Lookup::Pending);
+        assert_eq!(map.pending().as_deref(), Some("C-x ESC-"));
+        assert_eq!(map.feed(&ch('a')), Lookup::Action(Act::Help));
+    }
+
+    #[test]
+    fn a_prefix_conflict_is_refused_whichever_binding_sorts_first() {
+        // "C-i x" sorts before "TAB", and C-i is TAB.
+        let e = file("list:\n  TAB: help\n  C-i x: down\n")
+            .unwrap()
+            .keymap(&SECTION)
+            .unwrap_err();
+        assert!(matches!(e, KeymapError::Prefix { .. }), "{e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "list preset binds g and g g")]
+    fn a_preset_with_a_prefix_conflict_fails_its_build() {
+        const BAD: Section<Act> = Section {
+            name: "list",
+            default: &[("g", Act::Down), ("g g", Act::Help)],
+            emacs: &[],
+        };
+        let _ = Keymap::preset(&BAD, Preset::Default);
+    }
+
+    #[test]
+    #[should_panic(expected = "list preset binds q and q")]
+    fn a_preset_binding_one_key_twice_fails_its_build() {
+        const BAD: Section<Act> = Section {
+            name: "list",
+            default: &[("q", Act::Quit), ("q", Act::Help)],
+            emacs: &[],
+        };
+        let _ = Keymap::preset(&BAD, Preset::Default);
+    }
+
+    #[test]
     fn esc_esc_esc_reaches_a_binding_on_m_esc_esc() {
         let text = "preset: emacs\nlist:\n  M-ESC ESC: quit\n";
         let mut map = file(text).unwrap().keymap(&SECTION).unwrap();
@@ -720,12 +834,58 @@ mod tests {
             ("format: one\n", "format must be a number"),
             ("list: 3\n", "list must be a map"),
             ("list: [\n", "keys.yml:"),
+            (
+                "list:\n  j: fly\n",
+                "the commands are down, save, quit, help, unbound",
+            ),
+            (
+                "list:\n  M-q: ~\n",
+                "keys.yml: list: \"M-q\": bind a command name, or unbound",
+            ),
+            (
+                "list:\n  M-q: false\n",
+                "keys.yml: list: \"M-q\": bind a command name",
+            ),
+            (
+                "list:\n  [a]: down\n",
+                "keys.yml: list: a key sequence must be text",
+            ),
+            ("format: -1\n", "format must be a number"),
+            ("preset: 3\n", "preset must be default or emacs"),
+            ("- a\n", "the file must be a map"),
         ];
         for (text, says) in cases {
             let e = file(text).and_then(|f| f.keymap(&SECTION).map(|_| ()));
             let msg = e.expect_err(text).to_string();
             assert!(msg.contains(says), "{text:?}: {msg}");
+            assert!(!msg.contains("untagged"), "{text:?}: {msg}");
         }
+    }
+
+    #[test]
+    fn an_empty_section_binds_nothing_and_keeps_the_preset() {
+        let f = file("preset: emacs\nlist:\n  # C-n: down\n").unwrap();
+        let mut map = f.keymap(&SECTION).unwrap();
+        assert_eq!(map.feed(&ctrl('n')), Lookup::Action(Act::Down));
+        f.check_sections(&["list"]).unwrap();
+    }
+
+    #[test]
+    fn a_numeric_key_is_read_as_its_text() {
+        let mut map = file("list:\n  1: help\n")
+            .unwrap()
+            .keymap(&SECTION)
+            .unwrap();
+        assert_eq!(map.feed(&ch('1')), Lookup::Action(Act::Help));
+    }
+
+    #[test]
+    fn the_keys_file_sits_beside_the_user_config() {
+        let tool = crate::tool::ToolName::new("tisket").unwrap();
+        let keys = keys_path(tool).unwrap();
+        let config = crate::userconfig::config_path(tool).unwrap();
+        assert_eq!(keys.parent(), config.parent());
+        assert_eq!(keys.file_name().unwrap(), "keys.yml");
     }
 
     #[test]
