@@ -11,9 +11,10 @@
   environment variable selects it. An absent file uses the default
   preset. Errors name the file and, where applicable, the section
   and key. The tool owns the terminal and event loop. The editor
-  returns text to save and keep editing or to save and close, or
-  signals cancellation without a write. The tool writes through
-  its own core operation.
+  returns text to save and keep editing or to save and close.
+  It can also signal cancellation without a write. The tool writes
+  through its own core operation. `Editor::single_line` provides a
+  one-line prompt that acts as Emacs's minibuffer.
 
 ## 0.5.0
 

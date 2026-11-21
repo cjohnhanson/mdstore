@@ -109,7 +109,7 @@ optional = true
 # The ratatui organisation's maintained successor to tui-textarea. The
 # editor drives it only through its public editing methods, never its
 # built-in key handling, so the configured keymap is the only one.
-# `search` is the incremental search.
+# `search` is the regex search the editor's incremental search runs on.
 [dependencies.ratatui-textarea]
 version = "0.9.4"
 optional = true

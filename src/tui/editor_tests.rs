@@ -110,6 +110,28 @@ fn undo_after_the_mark_leaves_the_mark() {
 }
 
 #[test]
+fn undo_in_a_run_of_equal_characters_leaves_the_mark() {
+    let mut ed = emacs("xaaa\n");
+    press(&mut ed, "C-e");
+    typed(&mut ed, "a");
+    press(&mut ed, "C-a C-f C-f C-SPC C-a C-/");
+    assert_eq!(ed.text(), "xaaa\n");
+    press(&mut ed, "C-w");
+    assert_eq!(ed.text(), "xa\n", "the region is point (4) to mark (2)");
+}
+
+#[test]
+fn redo_in_a_run_of_equal_characters_leaves_the_mark() {
+    let mut ed = emacs("xaaa\n");
+    press(&mut ed, "C-e");
+    typed(&mut ed, "a");
+    press(&mut ed, "C-/ C-a C-f C-f C-SPC C-g C-a C-M-/");
+    assert_eq!(ed.text(), "xaaaa\n");
+    press(&mut ed, "C-a C-w");
+    assert_eq!(ed.text(), "aaa\n", "the region is point (0) to mark (2)");
+}
+
+#[test]
 fn redo_after_the_mark_leaves_the_mark() {
     let mut ed = emacs("abcdefgh\n");
     press(&mut ed, "C-e");
@@ -260,6 +282,33 @@ fn a_longer_replacement_ending_at_the_mark_pushes_it_on() {
     assert_eq!(ed.text(), "SS d\n");
     press(&mut ed, "C-x C-x");
     assert_eq!(ed.cursor(), (0, 2));
+}
+
+#[test]
+fn a_replacement_does_not_slide_past_the_mark() {
+    let mut ed = emacs("Sß d\n");
+    press(&mut ed, "C-f C-SPC C-g C-a M-u");
+    assert_eq!(ed.text(), "SSS d\n");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 1));
+}
+
+#[test]
+fn a_backward_deletion_in_a_run_pulls_the_mark_back() {
+    let mut ed = emacs("xxx\n");
+    press(&mut ed, "C-f C-f C-SPC C-SPC DEL C-x C-x");
+    assert_eq!(ed.text(), "xx\n");
+    assert_eq!(ed.cursor(), (0, 1));
+}
+
+#[test]
+fn ending_a_search_clears_a_message_set_during_it() {
+    let mut ed = emacs("ab\n");
+    press(&mut ed, "C-s");
+    typed(&mut ed, "b");
+    ed.set_message("Save refused");
+    press(&mut ed, "RET");
+    assert_eq!(ed.echo(), None);
 }
 
 #[test]

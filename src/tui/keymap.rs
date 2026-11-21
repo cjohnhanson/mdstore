@@ -204,8 +204,8 @@ impl<A: Command> Keymap<A> {
     ///
     /// # Panics
     ///
-    /// When a preset table holds a malformed key or two bindings where
-    /// one starts the other. The tables are constants, and each tool's
+    /// When a preset table holds a malformed key, one key bound twice,
+    /// or two bindings where one starts the other. The tables are constants, and each tool's
     /// tests build every preset, so this fails a test, not a user.
     #[must_use]
     pub fn preset(section: &Section<A>, preset: Preset) -> Self {

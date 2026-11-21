@@ -211,7 +211,7 @@ impl Command for EditAction {
             Self::MarkWholeBuffer => "select all",
             Self::IsearchForward => "search forward as you type",
             Self::IsearchBackward => "search backward as you type",
-            Self::KeyboardQuit => "cancel the region, a prefix, or a search",
+            Self::KeyboardQuit => "cancel the region, a prefix, or a search; close a prompt",
             Self::Save => "save and keep editing",
             Self::Finish => "save and close",
             Self::Cancel => "close without saving",
@@ -224,8 +224,8 @@ use EditAction as E;
 /// The editor's section in a keys file, and its two presets.
 ///
 /// The default preset is the key table in ratatui-textarea's README,
-/// with `C-s` to save, `ESC` to close, `C-SPC` to start a region, and
-/// `TAB` to indent. The Emacs preset is Emacs's own keys.
+/// with `C-s` to save, `ESC` to close, `C-g` to quit, `C-SPC` to start a
+/// region, and `TAB` to indent. The Emacs preset is Emacs's own keys.
 pub const SECTION: Section<EditAction> = Section {
     name: "editor",
     default: &[
@@ -522,7 +522,8 @@ impl Editor {
         Self::build(text, keymap, false)
     }
 
-    /// A one-line editor for a prompt, which acts as Emacs's minibuffer:
+    /// A one-line editor for a prompt, on the first line of `text`, which
+    /// acts as Emacs's minibuffer:
     /// `RET` and save finish ([`Outcome::Finish`]), keyboard-quit and
     /// kill-buffer cancel without asking, search does nothing, and a
     /// yank of several lines inserts them joined by spaces.
@@ -661,12 +662,20 @@ impl Editor {
         let cursor_before = offset(lines, self.cursor());
         let mark_before = self.mark;
         let mark_offset = mark_before.map(|m| offset(lines, m));
+        // Undo and redo move point to the edit from wherever it was, so
+        // only where they leave point says where the edit happened.
+        let history = matches!(lookup, Lookup::Action(E::Undo | E::Redo));
         let outcome = self.command(lookup);
         if let (Some(mark), true) = (mark_offset, self.mark == mark_before) {
             let lines = self.textarea.lines();
             let after: Vec<char> = joined(lines).chars().collect();
             if after != before {
-                let anchor = cursor_before.min(offset(lines, self.cursor()));
+                let cursor_after = offset(lines, self.cursor());
+                let anchor = if history {
+                    cursor_after.saturating_sub(after.len().saturating_sub(before.len()))
+                } else {
+                    cursor_before.min(cursor_after)
+                };
                 let span = edit_span(&before, &after, anchor);
                 self.mark = Some(position(lines, shift_mark(mark, span)));
             }

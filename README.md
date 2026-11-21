@@ -213,7 +213,10 @@ Other sections and their commands, such as `list` and `quit`, belong to
 the tool. A tool refuses a section it does not read. Commands in the
 `editor` section use `EditAction::name`, mostly Emacs command names.
 An unknown command is refused with the valid names. Binding a preset
-prefix such as `C-c` replaces all preset bindings under it, as in Emacs.
+prefix, such as `C-c` in the Emacs preset, replaces all preset bindings
+under it. A user key that extends a preset key drops that preset
+binding. For example, binding `C-c C-s` in the default preset drops
+`C-c` (`kill-ring-save`).
 
 Load the file and build an editor on `body: &str`:
 
@@ -236,6 +239,10 @@ writes, calls `Editor::saved()`, and keeps editing.
 compares the document's body on disk with `Editor::original()` and
 refuses if it changed. Writes go through the tool's own core operation.
 A refused write keeps the editor open.
+`saved()` sets the comparison baseline to `text()`, which uses `\n` and
+ends nonempty bodies with exactly one newline. To avoid false
+conflicts, write `text()` unchanged or apply the same normalisation to
+the body before comparing.
 
 `&Editor` is a ratatui widget. A body editor draws text above an echo
 line for a pending prefix, search, discard question, or message.
