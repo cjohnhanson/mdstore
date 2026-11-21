@@ -81,9 +81,3 @@ the diff does not show it.
 
 Do not narrate the process. Do not reference the conversation that
 produced the change.
-
-Add a trailer when a coding assistant wrote a substantial part:
-
-```
-Co-authored-by: Claude <noreply@anthropic.com>
-```
