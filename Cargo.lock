@@ -2365,6 +2365,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "toml",
  "url",
  "yaml_serde",
 ]

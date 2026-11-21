@@ -148,3 +148,6 @@ features = ["search"]
 [dev-dependencies]
 # Snapshots of the editor drawn on ratatui's test backend.
 insta = "1.49"
+# Reads Cargo.toml in tests/dependency_floor.rs. Already in the tree
+# through mdbook.
+toml = "1"
