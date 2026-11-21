@@ -14,10 +14,14 @@ rules. This file covers only what those two do not.
 
 ## Before you push
 
+The merge-gate tests require `gaff` on `PATH`. The install command
+below installs `gaff` without Git hooks.
+
 Run the checks the gates run. Pass `--all-features` to both. The `mcp`
 feature is off by default, so a run without it never compiles that code:
 
 ```sh
+cargo install --git https://github.com/cjohnhanson/gaff
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
