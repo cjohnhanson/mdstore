@@ -62,6 +62,13 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # tests/merge_gate_guard.rs runs scripts/merge-gate.sh, which calls
+      # gaff. The action installs gaff; `run: false` skips `gaff ci`, the
+      # review check, which belongs on the pull request head, as in
+      # verify.yml.
+      - uses: cjohnhanson/gaff@main
+        with:
+          run: "false"
 
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings

@@ -11,7 +11,11 @@ gets closed.
 
 ## Setup
 
+The merge-gate tests require `gaff` on `PATH`. The install command
+below installs `gaff` without Git hooks.
+
 ```sh
+cargo install --git https://github.com/cjohnhanson/gaff
 git clone https://github.com/cjohnhanson/mdstore
 cd mdstore
 cargo build
