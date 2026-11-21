@@ -1,0 +1,7 @@
+signoff[review-tests] PASS e1d0bb1 ran release.yml's tag check locally (accepts v0.6.1, rejects v0.6.0) and restored the 0.6.0 lock to see cargo metadata --locked exit 101, the guard cargo package --locked applies in verify
+signoff[review-docs] PASS e1d0bb1 swept README, CHANGELOG, AGENTS.md, CONTRIBUTING, SECURITY and workflow comments, found no stale 0.6.0, and checked each new changelog claim against the crates.io API and the manifests
+signoff[review-code] PASS e1d0bb1 the commit changes no Rust source; checked neighbours: no stale 0.6.0, README pins 0.6, the user agent reads CARGO_PKG_VERSION, and the tag check accepts v0.6.1
+signoff[review-deps] PASS e1d0bb1 the only dependency change is the crate's own version line; cargo-audit reports 0 vulnerabilities and the 12 unsound advisories are unreachable; no strong copyleft
+signoff[review-usability] PASS e1d0bb1 the CHANGELOG explains the unpublished 0.6.0 under 0.6.1, README 0.6 lines resolve to 0.6.1, and wrong turns (tagging the PR commit, reusing v0.6.0) each get a refusal naming the cause
+
+Declined minors: "resolves to 0.6.1" wording and "In Cargo.toml" (follow-up when 0.6.2 ships); release.yml header steps and release-notes source (pre-existing, workflow doc follow-up); lock refresh for faster-hex/rustix/tokio unsound warnings, rust-version field, aws-lc-sys C compiler note (pre-existing, outside a version bump).
