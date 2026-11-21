@@ -460,8 +460,8 @@ fn position(lines: &[String], mut at: usize) -> Pos {
 /// Inside a run of equal characters (indentation, blank lines) several
 /// spans describe the same change, and the comparison finds the
 /// rightmost. An insertion or deletion slides left through the run, no
-/// further than `anchor`, the cursor offset nearest the edit, so the
-/// span sits where the command made it.
+/// further than `anchor`, the caller's best offset for the edit's start,
+/// so the span sits where the command made it.
 fn edit_span(before: &[char], after: &[char], anchor: usize) -> (usize, usize, usize) {
     let prefix = before.iter().zip(after).take_while(|(a, b)| a == b).count();
     let room = before.len().min(after.len()) - prefix;
