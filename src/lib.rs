@@ -15,6 +15,8 @@ pub mod slug;
 pub mod snapshot;
 pub mod store;
 pub mod tool;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod userconfig;
 
 pub use document::{

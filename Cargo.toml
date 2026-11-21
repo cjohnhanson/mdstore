@@ -80,6 +80,47 @@ mcp = ["dep:serde_json", "dep:sha2"]
 # documents should not pay for them. tokio is not one of the 57; reqwest
 # and gix already carry it with no feature at all.
 book = ["dep:mdbook-core", "dep:mdbook-html", "dep:mdbook-renderer"]
+# The terminal UI kit the tools share: a keymap read from a config file,
+# with a default and an Emacs preset, and the markdown editor the
+# mdstore tools open on a document body. Off by default: a CLI or an
+# MCP server should not compile a terminal stack. The ratatui split
+# crates are the ones ratatui-textarea builds on, so a tool on ratatui
+# 0.30 shares one copy of each.
+tui = [
+    "dep:ratatui-core",
+    "dep:ratatui-widgets",
+    "dep:ratatui-crossterm",
+    "dep:ratatui-textarea",
+    "dep:regex",
+]
+
+[dependencies.ratatui-core]
+version = "0.1.2"
+optional = true
+
+[dependencies.ratatui-widgets]
+version = "0.3.2"
+optional = true
+
+[dependencies.ratatui-crossterm]
+version = "0.1.2"
+optional = true
+
+# The ratatui organisation's maintained successor to tui-textarea. The
+# editor drives it only through its public editing methods, never its
+# built-in key handling, so the configured keymap is the only one.
+# `search` is the regex search the editor's incremental search runs on.
+[dependencies.ratatui-textarea]
+version = "0.9.4"
+optional = true
+default-features = false
+features = ["crossterm", "search"]
+
+# Escapes an incremental-search query, so the search is literal. The
+# same regex ratatui-textarea's `search` feature compiles.
+[dependencies.regex]
+version = "1"
+optional = true
 
 [dependencies.serde_json]
 version = "1"
@@ -101,3 +142,7 @@ optional = true
 version = "0.5.4"
 optional = true
 features = ["search"]
+
+[dev-dependencies]
+# Snapshots of the editor drawn on ratatui's test backend.
+insta = "1.49"

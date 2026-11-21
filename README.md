@@ -184,6 +184,76 @@ mdstore = { version = "0.5", package = "mdstore-core", features = ["mcp"] }
 The feature is off by default, so a consumer that builds only a CLI
 does not pull in the server stack.
 
+## Terminal UI
+
+The optional `tui` feature provides key bindings and a markdown body
+editor in `mdstore::tui`. The tool owns the terminal and event loop.
+It is off by default so CLIs and MCP servers do not compile the
+terminal stack.
+
+```toml
+mdstore = { version = "0.5", package = "mdstore-core", features = ["tui"] }
+```
+
+`keymap::keys_path(tool)` gives `~/.config/<tool>/keys.yml`. The file
+overrides the `default` or `emacs` preset. An absent file uses `default`.
+Keys use Emacs notation, with one space between keys in a sequence.
+
+```yaml
+format: 1
+preset: emacs
+editor:
+  "M-y": unbound       # remove yank-pop
+  "C-c C-s": save-buffer
+list:
+  "C-x C-c": quit
+```
+
+Other sections and their commands, such as `list` and `quit`, belong to
+the tool. A tool refuses a section it does not read. Commands in the
+`editor` section use `EditAction::name`, mostly Emacs command names.
+An unknown command is refused with the valid names. Binding a preset
+prefix, such as `C-c` in the Emacs preset, replaces all preset bindings
+under it. A user key that extends a preset key drops that preset
+binding. For example, binding `C-c C-s` in the default preset drops
+`C-c` (`kill-ring-save`).
+
+Load the file and build an editor on `body: &str`:
+
+```rust
+use mdstore::tui::{editor, keymap, Editor, KeysFile};
+let tool = mdstore::ToolName::new("notes").unwrap();
+let path = keymap::keys_path(tool).ok_or("no home directory")?;
+let file = KeysFile::load(&path)?;
+file.check_sections(&["editor", "list"])?;
+let keymap = file.keymap(&editor::SECTION)?;
+let mut editor = Editor::new(body, keymap);
+```
+
+`Editor::handle` returns `Outcome::Save(text)` for `save-buffer`
+(`C-x C-s` in the Emacs preset, `C-s` in the default one): the tool
+writes, calls `Editor::saved()`, and keeps editing.
+`Outcome::Finish(text)` asks the tool to write and close
+(`with-editor-finish`, `C-c C-c` or `C-x #` in the Emacs preset).
+`Outcome::Cancel` closes without writing. Before either write, the tool
+compares the document's body on disk with `Editor::original()` and
+refuses if it changed. Writes go through the tool's own core operation.
+A refused write keeps the editor open.
+`saved()` sets the comparison baseline to `text()`, which uses `\n` and
+ends nonempty bodies with exactly one newline. To avoid false
+conflicts, write `text()` unchanged or apply the same normalisation to
+the body before comparing.
+
+`&Editor` is a ratatui widget. A body editor draws text above an echo
+line for a pending prefix, search, discard question, or message.
+`Editor::handle` takes a `KeyEvent` from `ratatui_crossterm::crossterm`.
+With unsaved body changes, `kill-buffer` asks "Discard changes? (y or n)"
+before returning `Outcome::Cancel`. `Editor::single_line` provides a
+one-line prompt that acts as Emacs's minibuffer. `RET` and save return
+`Outcome::Finish`; keyboard-quit and kill-buffer cancel without asking.
+Search does nothing. A prompt draws only its text. The tool draws
+`Editor::echo()` beside the prompt to show pending prefixes or messages.
+
 ## Related
 
 - [tisket](https://github.com/cjohnhanson/tisket) — issue tracker. Markdown issues with YAML frontmatter, in the repository

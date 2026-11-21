@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The optional `tui` feature adds configurable key bindings and a
+  markdown body editor. The Emacs preset includes movement, a kill
+  ring, mark and region, `C-g`, `C-x` prefixes, `M-` keys, and
+  incremental search. Each tool supplies its keys file path; no
+  environment variable selects it. An absent file uses the default
+  preset. Errors name the file and, where applicable, the section
+  and key. The tool owns the terminal and event loop. The editor
+  returns text to save and keep editing or to save and close.
+  It can also signal cancellation without a write. The tool writes
+  through its own core operation. `Editor::single_line` provides a
+  one-line prompt that acts as Emacs's minibuffer.
+
 ## 0.5.0
 
 ### Changed
