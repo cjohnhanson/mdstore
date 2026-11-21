@@ -209,10 +209,8 @@ b7c8454 for the book feature.
 
 Breaking. A store now reads and writes through a capability handle, so
 a path that leaves the store is refused. A caller cannot forget a
-check, because there is no check to forget. The kernel enforces this
-on Linux and on FreeBSD; elsewhere, macOS included, cap-std resolves
-the path in userspace. See the `confined` module for what each
-platform gives.
+check, because there is no check to forget. See the `confined` module
+for what each platform gives.
 
 ### Breaking changes
 

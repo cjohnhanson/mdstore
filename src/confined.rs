@@ -25,7 +25,7 @@
 //! The userspace resolver opens one component at a time, follows each
 //! symlink itself, and refuses components that leave the confined store.
 //! The walk is not atomic. Directory renames between steps create a race
-//! that kernel confinement avoids. cap-std's `racy_asserts` build flag
+//! that kernel confinement avoids. cap-primitives' `racy_asserts` build flag
 //! controls its race checks.
 //!
 //! In cap-std/cap-primitives 4.0.2, the userspace resolver could follow
