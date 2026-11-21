@@ -2,9 +2,6 @@
 
 ## Use of AI
 
-Say so in the pull request when a coding assistant wrote part of the
-change. Disclosure is expected, not disqualifying.
-
 You must be able to explain the change in your own words. Write your own
 comments on the pull request. A pull request the author cannot explain
 gets closed.
