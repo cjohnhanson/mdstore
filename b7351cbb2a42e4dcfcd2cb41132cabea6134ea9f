@@ -1,0 +1,7 @@
+signoff[review-tests] PASS b7351cb fresh clone shows b943edf and b7351cb share tree c21f902c8b45, the diff between them is empty, and b7351cb's sole parent is the reviewed base 17d74e6 on origin/main, so the b943edf review covers it
+signoff[review-docs] PASS b7351cb b7351cb is the tip of main with parent 17d74e6, its tree c21f902 equals b943edf's tree, the diff is empty, and the whole squash message was read with no attribution line found
+signoff[review-code] PASS b7351cb after fetching origin main, b943edf and b7351cb both have tree c21f902c8b45 and git diff b943edf b7351cb is empty, so the b943edf review covers this squash commit
+signoff[review-deps] PASS b7351cb b7351cb is on origin/main with the same tree as b943edf and an empty diff, so the audited Cargo.toml and Cargo.lock (0 vulnerabilities, cap-std 4.0.3) are the merged ones
+signoff[review-usability] PASS b7351cb b7351cb is the tip of origin/main, its tree c21f902 matches b943edf and the diff is empty, so the b943edf usability review applies unchanged
+
+PR #23 squash-merged the reviewed tip b943edf (signed in the note on b943edf) as b7351cb. Each reviewer confirmed the tree is identical before this tag push.
