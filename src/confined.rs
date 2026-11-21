@@ -17,22 +17,28 @@
 //!
 //! # Who refuses, and it is not always the kernel
 //!
-//! On Linux and on FreeBSD the kernel refuses. cap-std opens with
-//! `RESOLVE_BENEATH`, so a path that escapes fails inside the syscall
-//! and no sequence of steps can walk out.
+//! On Linux, cap-std tries `openat2` with `RESOLVE_BENEATH`. The kernel
+//! then refuses paths that escape the confined store. If `openat2`
+//! returns `ENOSYS`, cap-std uses its userspace resolver instead.
+//! Kernels before 5.6 lack `openat2`; a seccomp policy can also make
+//! it unavailable. On FreeBSD, the kernel refuses escapes when
+//! `O_RESOLVE_BENEATH` is available. Otherwise, cap-std uses the
+//! userspace resolver. Windows and macOS also use that resolver.
 //!
-//! Everywhere else, macOS included, cap-std resolves the path in
-//! userspace. It opens one component at a time and follows each
-//! symlink itself, refusing a component that leaves the store. The
-//! refusal covers the same paths, and it is not atomic. Another
-//! process that renames a directory between two steps of that walk is
-//! a race the kernel form does not have. cap-std says so itself: its
-//! race checks sit behind a `racy_asserts` build flag.
+//! The userspace resolver opens one component at a time and follows
+//! each symlink itself. It refuses a component that leaves the
+//! confined store. A defect in cap-std/cap-primitives 4.0.2 let a name
+//! ending in `/` follow a link out (RUSTSEC-2026-0482). This crate
+//! requires cap-std 4.0.3, which fixes that defect.
 //!
-//! So the guarantee is worth naming precisely. This module answers
-//! untrusted text in a path, and it answers that on every platform. It
-//! does not answer a hostile process racing the walk from inside the
-//! store directory, and on macOS that gap is real.
+//! The userspace walk is not atomic. A process can rename a directory
+//! between two steps, creating a race the kernel form does not have.
+//! cap-std's race checks sit behind a `racy_asserts` build flag.
+//!
+//! This module answers untrusted text in a path on every platform.
+//! It does not answer a hostile process racing the walk from inside
+//! the confined store directory. That gap is real wherever the
+//! userspace resolver runs.
 //!
 //! # What this does not cover
 //!

@@ -13,8 +13,6 @@ from a single vantage point.
 
 ## Install
 
-From the first published release onward:
-
 ```sh
 cargo add mdstore-core --rename mdstore
 ```
