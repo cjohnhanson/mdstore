@@ -604,6 +604,34 @@ mod tests {
         );
     }
 
+    /// RUSTSEC-2026-0482: a name ending in `/`, or a link whose target
+    /// ends in `/`, followed the link out of the store in cap-std
+    /// 4.0.2. The userspace resolver that had the defect runs on macOS
+    /// and the other platforms without a kernel `RESOLVE_BENEATH`, so
+    /// this goes red there on 4.0.2. On Linux openat2 refuses these
+    /// names whatever the cap-std version, so there it pins the
+    /// behaviour and cannot catch a regression.
+    #[cfg(unix)]
+    #[test]
+    fn a_trailing_slash_does_not_follow_a_link_out() {
+        let f = Fixture::new("trailing-slash");
+        // A subdirectory outside, so a listing that escaped would show it.
+        std::fs::create_dir_all(f.base.join("outside/inner")).unwrap();
+        std::os::unix::fs::symlink("../outside", f.base.join("store/escape")).unwrap();
+        std::os::unix::fs::symlink("../outside/", f.base.join("store/escape2")).unwrap();
+
+        for name in ["escape/", "escape2/", "escape2"] {
+            assert!(f.store.scan(name).is_err(), "scan {name} must refuse");
+            assert!(
+                f.store.subdirectories(name).is_empty(),
+                "subdirectories {name} must list nothing"
+            );
+        }
+        assert!(f.store.read("escape/secret.md").is_err());
+        assert!(f.store.read("escape2/secret.md").is_err());
+        assert!(f.outside_is_intact());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_linked_directory_is_not_walked() {
