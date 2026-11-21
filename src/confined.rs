@@ -15,24 +15,28 @@
 //! refused. A caller cannot forget the check, because there is no
 //! check to forget.
 //!
-//! # Who refuses, and it is not always the kernel
+//! # Kernel and userspace confinement
 //!
-//! On Linux and on FreeBSD the kernel refuses. cap-std opens with
-//! `RESOLVE_BENEATH`, so a path that escapes fails inside the syscall
-//! and no sequence of steps can walk out.
+//! cap-std uses kernel confinement when possible: `openat2` with
+//! `RESOLVE_BENEATH` on Linux and `O_RESOLVE_BENEATH` on FreeBSD.
+//! Whenever cap-std cannot use kernel confinement, it uses a userspace
+//! resolver. Any platform can use this resolver.
 //!
-//! Everywhere else, macOS included, cap-std resolves the path in
-//! userspace. It opens one component at a time and follows each
-//! symlink itself, refusing a component that leaves the store. The
-//! refusal covers the same paths, and it is not atomic. Another
-//! process that renames a directory between two steps of that walk is
-//! a race the kernel form does not have. cap-std says so itself: its
-//! race checks sit behind a `racy_asserts` build flag.
+//! The userspace resolver opens one component at a time, follows each
+//! symlink itself, and refuses components that leave the confined store.
+//! The walk is not atomic. Directory renames between steps create a race
+//! that kernel confinement avoids. cap-primitives' `racy_asserts` build flag
+//! controls its race checks.
 //!
-//! So the guarantee is worth naming precisely. This module answers
-//! untrusted text in a path, and it answers that on every platform. It
-//! does not answer a hostile process racing the walk from inside the
-//! store directory, and on macOS that gap is real.
+//! In cap-std/cap-primitives 4.0.2, the userspace resolver could follow
+//! links outside the confined store when a path or symlink target ended
+//! in `/` (RUSTSEC-2026-0482). This crate requires cap-std 4.0.3, which
+//! fixes the defect.
+//!
+//! This module handles untrusted path text on every platform.
+//! It does not protect against a hostile process racing the walk from
+//! inside the confined store directory. This gap can occur on any
+//! platform.
 //!
 //! # What this does not cover
 //!
@@ -602,6 +606,42 @@ mod tests {
                 p.to_string_lossy().contains("linked") && why.contains("symlink")
             })
         );
+    }
+
+    /// On macOS with cap-std 4.0.2, `scan` and `subdirectories` escaped
+    /// the confined store through `escape/` and `escape2/`
+    /// (RUSTSEC-2026-0482). The links target `../outside` and
+    /// `../outside/`, respectively.
+    /// cap-std 4.0.2 already refused names without the trailing slash
+    /// and `read` calls through either link. Those assertions preserve
+    /// behavior that was already safe.
+    ///
+    /// This Unix-only test detects the defect only when the userspace
+    /// resolver runs, as measured on macOS.
+    /// When the kernel refuses these paths, the test passes with any
+    /// cap-std version. A Linux CI run that uses kernel confinement
+    /// therefore cannot detect this resolver regression.
+    /// `tests/dependency_floor.rs` checks the cap-std dependency floor
+    /// on every platform.
+    #[cfg(unix)]
+    #[test]
+    fn a_trailing_slash_does_not_follow_a_link_out() {
+        let f = Fixture::new("trailing-slash");
+        // A subdirectory outside, so a listing that escaped would show it.
+        std::fs::create_dir_all(f.base.join("outside/inner")).unwrap();
+        std::os::unix::fs::symlink("../outside", f.base.join("store/escape")).unwrap();
+        std::os::unix::fs::symlink("../outside/", f.base.join("store/escape2")).unwrap();
+
+        for name in ["escape/", "escape2/", "escape2"] {
+            assert!(f.store.scan(name).is_err(), "scan {name} must refuse");
+            assert!(
+                f.store.subdirectories(name).is_empty(),
+                "subdirectories {name} must list nothing"
+            );
+        }
+        assert!(f.store.read("escape/secret.md").is_err());
+        assert!(f.store.read("escape2/secret.md").is_err());
+        assert!(f.outside_is_intact());
     }
 
     #[cfg(unix)]

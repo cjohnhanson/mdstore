@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 ### Added
 
@@ -15,6 +15,14 @@
   It can also signal cancellation without a write. The tool writes
   through its own core operation. `Editor::single_line` provides a
   one-line prompt that acts as Emacs's minibuffer.
+
+### Security
+
+- mdstore-core 0.6.0 raises the cap-std minimum to 4.0.3 for
+  RUSTSEC-2026-0482. cap-std 4.0.2 could follow symlinks outside a
+  confined store when the caller's path or symlink target ended in `/`.
+  This minimum applies when consumers upgrade to mdstore-core 0.6.0.
+  Consumers on 0.5.x can update cap-std with `cargo update -p cap-std`.
 
 ## 0.5.0
 
@@ -201,10 +209,8 @@ b7c8454 for the book feature.
 
 Breaking. A store now reads and writes through a capability handle, so
 a path that leaves the store is refused. A caller cannot forget a
-check, because there is no check to forget. The kernel enforces this
-on Linux and on FreeBSD; elsewhere, macOS included, cap-std resolves
-the path in userspace. See the `confined` module for what each
-platform gives.
+check, because there is no check to forget. See the `confined` module
+for what each platform gives.
 
 ### Breaking changes
 
