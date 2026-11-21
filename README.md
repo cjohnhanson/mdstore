@@ -237,6 +237,16 @@ compares the document's body on disk with `Editor::original()` and
 refuses if it changed. Writes go through the tool's own core operation.
 A refused write keeps the editor open.
 
+`&Editor` is a ratatui widget. A body editor draws text above an echo
+line for a pending prefix, search, discard question, or message.
+`Editor::handle` takes a `KeyEvent` from `ratatui_crossterm::crossterm`.
+With unsaved body changes, `kill-buffer` asks "Discard changes? (y or n)"
+before returning `Outcome::Cancel`. `Editor::single_line` provides a
+one-line prompt that acts as Emacs's minibuffer. `RET` and save return
+`Outcome::Finish`; keyboard-quit and kill-buffer cancel without asking.
+Search does nothing. A prompt draws only its text. The tool draws
+`Editor::echo()` beside the prompt to show pending prefixes or messages.
+
 ## Related
 
 - [tisket](https://github.com/cjohnhanson/tisket) — issue tracker. Markdown issues with YAML frontmatter, in the repository

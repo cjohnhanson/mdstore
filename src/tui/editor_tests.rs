@@ -202,6 +202,99 @@ fn a_prompt_closes_without_asking() {
 }
 
 #[test]
+fn c_g_closes_an_emacs_prompt() {
+    let mut ed = single("");
+    typed(&mut ed, "ab");
+    assert_eq!(press(&mut ed, "C-g"), Outcome::Cancel);
+    let mut ed = single("");
+    assert_eq!(press(&mut ed, "ESC ESC ESC"), Outcome::Cancel);
+}
+
+#[test]
+fn search_does_nothing_in_a_prompt() {
+    let mut ed = single("");
+    press(&mut ed, "C-s");
+    typed(&mut ed, "abc");
+    assert_eq!(press(&mut ed, "RET"), Outcome::Finish("abc".into()));
+}
+
+#[test]
+fn save_submits_a_prompt() {
+    let mut ed = single("q");
+    assert_eq!(press(&mut ed, "C-x C-s"), Outcome::Finish("q".into()));
+}
+
+#[test]
+fn tab_before_an_indented_mark_moves_the_mark() {
+    let mut ed = emacs("    foo\n");
+    press(&mut ed, "M-f M-b C-SPC C-SPC C-a TAB C-w");
+    assert_eq!(
+        ed.text(),
+        "    foo\n",
+        "the four inserted spaces are the region"
+    );
+}
+
+#[test]
+fn typing_a_repeated_character_before_the_mark_moves_it() {
+    let mut ed = emacs("xx\n");
+    press(&mut ed, "C-e C-SPC C-SPC C-a");
+    typed(&mut ed, "x");
+    press(&mut ed, "C-w");
+    assert_eq!(ed.text(), "x\n");
+}
+
+#[test]
+fn an_insertion_beside_a_repeated_character_does_not_overlap_the_span() {
+    let mut ed = emacs("aa\n");
+    press(&mut ed, "C-SPC C-g C-e");
+    typed(&mut ed, "a");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 0));
+}
+
+#[test]
+fn a_longer_replacement_ending_at_the_mark_pushes_it_on() {
+    let mut ed = emacs("ß d\n");
+    press(&mut ed, "C-f C-SPC C-g C-a M-u");
+    assert_eq!(ed.text(), "SS d\n");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 2));
+}
+
+#[test]
+fn a_case_change_over_the_mark_leaves_it() {
+    let mut ed = emacs("hello\n");
+    press(&mut ed, "C-f C-f C-SPC C-g C-a M-u C-x C-x");
+    assert_eq!(ed.text(), "HELLO\n");
+    assert_eq!(ed.cursor(), (0, 2));
+}
+
+#[test]
+fn the_edit_span_never_overlaps_its_ends() {
+    let a: Vec<char> = "aa".chars().collect();
+    let b: Vec<char> = "aaa".chars().collect();
+    assert_eq!(edit_span(&a, &b, 2), (2, 0, 1));
+    assert_eq!(edit_span(&a, &b, 0), (0, 0, 1));
+    assert_eq!(edit_span(&b, &a, 0), (0, 1, 0));
+}
+
+#[test]
+fn an_offset_past_the_text_is_clamped_to_its_end() {
+    let lines = vec!["ab".to_string(), "c".to_string()];
+    assert_eq!(offset(&lines, (0, 9)), 2);
+    assert_eq!(offset(&lines, (7, 9)), 4);
+}
+
+#[test]
+fn deleting_a_repeated_character_at_the_mark_pulls_it_back() {
+    let mut ed = emacs("xxx\n");
+    press(&mut ed, "C-f C-SPC C-SPC C-a C-d C-x C-x");
+    assert_eq!(ed.text(), "xx\n");
+    assert_eq!(ed.cursor(), (0, 0));
+}
+
+#[test]
 fn a_deletion_around_the_mark_moves_it_to_the_deletion() {
     let mut ed = emacs("abcdef\n");
     press(&mut ed, "C-f C-f C-SPC C-g C-a C-k");

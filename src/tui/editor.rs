@@ -456,7 +456,13 @@ fn position(lines: &[String], mut at: usize) -> Pos {
 /// it removed, and how many it inserted. Found by comparing the text
 /// before and after, so it is where the edit happened whatever the
 /// command did with point (undo and redo move point to the edit).
-fn edit_span(before: &[char], after: &[char]) -> (usize, usize, usize) {
+///
+/// Inside a run of equal characters (indentation, blank lines) several
+/// spans describe the same change, and the comparison finds the
+/// rightmost. An insertion or deletion slides left through the run, no
+/// further than `anchor`, the cursor offset nearest the edit, so the
+/// span sits where the command made it.
+fn edit_span(before: &[char], after: &[char], anchor: usize) -> (usize, usize, usize) {
     let prefix = before.iter().zip(after).take_while(|(a, b)| a == b).count();
     let room = before.len().min(after.len()) - prefix;
     let suffix = before
@@ -466,19 +472,33 @@ fn edit_span(before: &[char], after: &[char]) -> (usize, usize, usize) {
         .take(room)
         .take_while(|(a, b)| a == b)
         .count();
-    (
-        prefix,
-        before.len() - prefix - suffix,
-        after.len() - prefix - suffix,
-    )
+    let mut start = prefix;
+    let removed = before.len() - prefix - suffix;
+    let inserted = after.len() - prefix - suffix;
+    // Only a pure insertion or deletion has equal alternatives.
+    let changed = match (removed, inserted) {
+        (0, n) if n > 0 => Some((after, n)),
+        (n, 0) if n > 0 => Some((before, n)),
+        _ => None,
+    };
+    if let Some((text, len)) = changed {
+        while start > anchor && text[start - 1] == text[start - 1 + len] {
+            start -= 1;
+        }
+    }
+    (start, removed, inserted)
 }
 
 /// Where a mark goes across an edit, as an Emacs marker moves: an edit
 /// wholly before it shifts it by the change in length, an edit at or
 /// after it leaves it, and an edit around it pulls it to the edit's
 /// start.
+///
+/// A replacement of the same length, such as a case change or a
+/// transpose, edits in place and leaves a mark inside it, as Emacs's
+/// in-place commands do.
 fn shift_mark(mark: usize, (start, removed, inserted): (usize, usize, usize)) -> usize {
-    if mark <= start {
+    if mark <= start || removed == inserted {
         mark
     } else if mark >= start + removed {
         mark - removed + inserted
@@ -502,9 +522,13 @@ impl Editor {
         Self::build(text, keymap, false)
     }
 
-    /// A one-line editor for a prompt: `RET` finishes
-    /// ([`Outcome::Finish`]), closing never asks, and a yank of
-    /// several lines inserts them joined by spaces.
+    /// A one-line editor for a prompt, which acts as Emacs's minibuffer:
+    /// `RET` and save finish ([`Outcome::Finish`]), keyboard-quit and
+    /// kill-buffer cancel without asking, search does nothing, and a
+    /// yank of several lines inserts them joined by spaces.
+    ///
+    /// A prompt draws only its text. A tool that shows a pending prefix
+    /// or a message draws [`Editor::echo`] itself, beside the prompt.
     #[must_use]
     pub fn single_line(text: &str, keymap: Keymap<EditAction>) -> Self {
         let first = text.lines().next().unwrap_or("");
@@ -630,8 +654,11 @@ impl Editor {
     /// Run one command, and keep the mark on the same text across
     /// whatever it changed, unless the command set the mark itself.
     fn dispatch(&mut self, lookup: Lookup<EditAction>) -> Outcome {
+        // Each key with a mark set costs two copies of the text; a
+        // document body is small enough for that.
         let lines = self.textarea.lines();
         let before: Vec<char> = joined(lines).chars().collect();
+        let cursor_before = offset(lines, self.cursor());
         let mark_before = self.mark;
         let mark_offset = mark_before.map(|m| offset(lines, m));
         let outcome = self.command(lookup);
@@ -639,7 +666,8 @@ impl Editor {
             let lines = self.textarea.lines();
             let after: Vec<char> = joined(lines).chars().collect();
             if after != before {
-                let span = edit_span(&before, &after);
+                let anchor = cursor_before.min(offset(lines, self.cursor()));
+                let span = edit_span(&before, &after, anchor);
                 self.mark = Some(position(lines, shift_mark(mark, span)));
             }
         }
@@ -932,6 +960,8 @@ impl Editor {
                 self.textarea.move_cursor(CursorMove::Top);
                 self.textarea.move_cursor(CursorMove::Head);
             }
+            // A prompt has one short line and no echo row to search on.
+            E::IsearchForward | E::IsearchBackward if self.single_line => {}
             E::IsearchForward | E::IsearchBackward => {
                 ta.cancel_selection();
                 let here = self.cursor();
@@ -943,10 +973,15 @@ impl Editor {
                     failing: false,
                 });
             }
+            // In a prompt, C-g closes it, as in Emacs's minibuffer.
+            E::KeyboardQuit if self.single_line => return Outcome::Cancel,
             E::KeyboardQuit => {
                 ta.cancel_selection();
                 self.message = Some("Quit".into());
             }
+            // A prompt has nothing to keep editing after a save, so a
+            // save submits it.
+            E::Save if self.single_line => return Outcome::Finish(self.text()),
             E::Save => return Outcome::Save(self.text()),
             E::Finish => return Outcome::Finish(self.text()),
             E::Cancel => {
@@ -1223,6 +1258,7 @@ impl Editor {
         let _ = self.textarea.set_search_pattern("");
         self.mark = Some(s.origin);
         self.mode = Mode::Edit;
+        self.message = None;
     }
 
     fn search_abort(&mut self) {
