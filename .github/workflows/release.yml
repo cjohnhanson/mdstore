@@ -62,6 +62,12 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # tests/merge_gate_guard.rs runs scripts/merge-gate.sh, which calls
+      # gaff. `run: false` installs the binary without running the review
+      # check, as verify.yml does: a tag has no review note of its own.
+      - uses: cjohnhanson/gaff@main
+        with:
+          run: "false"
 
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
