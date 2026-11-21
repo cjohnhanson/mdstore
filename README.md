@@ -184,6 +184,31 @@ mdstore = { version = "0.5", package = "mdstore-core", features = ["mcp"] }
 The feature is off by default, so a consumer that builds only a CLI
 does not pull in the server stack.
 
+## Terminal UI
+
+The `tui` feature provides key bindings and a markdown body editor in `mdstore::tui`.
+It is off by default so CLIs and MCP servers do not compile the terminal stack.
+
+```toml
+mdstore = { version = "0.5", package = "mdstore-core", features = ["tui"] }
+```
+
+`keymap` reads `~/.config/<tool>/keys.yml` and overlays its bindings on the
+`default` or `emacs` preset. Each tool passes its own path. Keys use Emacs notation.
+
+```yaml
+format: 1
+preset: emacs        # default | emacs
+editor:
+  "C-c C-c": save-buffer
+  "M-q": unbound     # removes the preset's binding
+list:
+  "C-x C-c": quit
+```
+
+`editor` uses the same file's `editor` section. `Editor::handle` returns `Outcome::Save(text)`.
+The tool compares the document on disk with `Editor::original()` before writing through its own operation.
+
 ## Related
 
 - [tisket](https://github.com/cjohnhanson/tisket) — issue tracker. Markdown issues with YAML frontmatter, in the repository

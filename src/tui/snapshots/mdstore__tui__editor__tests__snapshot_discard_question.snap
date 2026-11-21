@@ -1,0 +1,10 @@
+---
+source: src/tui/editor_tests.rs
+expression: screen(&ed)
+---
+"x# Title                      "
+"                              "
+"                              "
+"                              "
+"                              "
+"Discard changes? (y or n)     "

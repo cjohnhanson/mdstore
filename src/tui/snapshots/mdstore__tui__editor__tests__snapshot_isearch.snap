@@ -1,0 +1,10 @@
+---
+source: src/tui/editor_tests.rs
+expression: screen(&ed)
+---
+"# Title                       "
+"                              "
+"Body text.                    "
+"                              "
+"                              "
+"I-search: body                "
