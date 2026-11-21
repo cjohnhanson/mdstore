@@ -224,16 +224,17 @@ let path = keymap::keys_path(tool).ok_or("no home directory")?;
 let file = KeysFile::load(&path)?;
 file.check_sections(&["editor", "list"])?;
 let keymap = file.keymap(&editor::SECTION)?;
-let editor = Editor::new(body, keymap);
+let mut editor = Editor::new(body, keymap);
 ```
 
 `Editor::handle` returns `Outcome::Save(text)` for `save-buffer`
-(`C-x C-s` in the Emacs preset): the tool writes, calls
-`Editor::saved()`, and keeps editing. `Outcome::Finish(text)` asks the
-tool to write and close (`with-editor-finish`, `C-c C-c` or `C-x #`).
+(`C-x C-s` in the Emacs preset, `C-s` in the default one): the tool
+writes, calls `Editor::saved()`, and keeps editing.
+`Outcome::Finish(text)` asks the tool to write and close
+(`with-editor-finish`, `C-c C-c` or `C-x #` in the Emacs preset).
 `Outcome::Cancel` closes without writing. Before either write, the tool
-compares the document on disk with `Editor::original()` and refuses
-if it changed. Writes go through the tool's own core operation.
+compares the document's body on disk with `Editor::original()` and
+refuses if it changed. Writes go through the tool's own core operation.
 A refused write keeps the editor open.
 
 ## Related

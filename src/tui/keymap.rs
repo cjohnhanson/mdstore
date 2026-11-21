@@ -146,6 +146,16 @@ pub enum KeymapError {
         keys: String,
         longer: String,
     },
+    #[error(
+        "{path}: {section}: {first:?} and {second:?} are the same key to a terminal; \
+         bind it once"
+    )]
+    Duplicate {
+        path: PathBuf,
+        section: String,
+        first: String,
+        second: String,
+    },
 }
 
 /// A bound key sequence.
@@ -361,6 +371,14 @@ impl<A: Command> Keymap<A> {
         }
         for (i, (a, _, a_text)) in user.iter().enumerate() {
             for (b, _, b_text) in &user[i + 1..] {
+                if a == b {
+                    return Err(KeymapError::Duplicate {
+                        path: path.to_path_buf(),
+                        section: section.to_string(),
+                        first: (*a_text).to_string(),
+                        second: (*b_text).to_string(),
+                    });
+                }
                 let (short, long) = if is_prefix(a, b) {
                     (a_text, b_text)
                 } else if is_prefix(b, a) {
@@ -475,8 +493,8 @@ impl KeysFile {
                             found: n,
                         });
                     }
-                    Some(_) => {}
-                    None => return Err(field("format", "a number")),
+                    Some(1) => {}
+                    _ => return Err(field("format", "1")),
                 },
                 "preset" => {
                     let Value::String(p) = value else {
@@ -758,6 +776,31 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "list preset binds g g and g")]
+    fn a_preset_listing_the_longer_binding_first_fails_its_build() {
+        const BAD: Section<Act> = Section {
+            name: "list",
+            default: &[("g g", Act::Help), ("g", Act::Down)],
+            emacs: &[],
+        };
+        let _ = Keymap::preset(&BAD, Preset::Default);
+    }
+
+    #[test]
+    fn a_top_level_key_that_is_not_text_is_refused() {
+        let e = file("[a]: down\n").unwrap_err();
+        assert!(
+            e.to_string().contains("a top-level key must be a name"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_file_of_only_comments_is_the_default_preset() {
+        assert_eq!(file("# preset: emacs\n").unwrap().preset(), Preset::Default);
+    }
+
+    #[test]
     fn esc_esc_esc_reaches_a_binding_on_m_esc_esc() {
         let text = "preset: emacs\nlist:\n  M-ESC ESC: quit\n";
         let mut map = file(text).unwrap().keymap(&SECTION).unwrap();
@@ -831,7 +874,13 @@ mod tests {
             ),
             ("preset: vim\n", "unknown preset \"vim\""),
             ("format: 2\n", "format 2 is newer"),
-            ("format: one\n", "format must be a number"),
+            ("format: one\n", "format must be 1"),
+            ("format: 0\n", "format must be 1"),
+            ("format: 1.0\n", "format must be 1"),
+            (
+                "list:\n  TAB: help\n  C-i: down\n",
+                "\"C-i\" and \"TAB\" are the same key to a terminal",
+            ),
             ("list: 3\n", "list must be a map"),
             ("list: [\n", "keys.yml:"),
             (
@@ -850,7 +899,7 @@ mod tests {
                 "list:\n  [a]: down\n",
                 "keys.yml: list: a key sequence must be text",
             ),
-            ("format: -1\n", "format must be a number"),
+            ("format: -1\n", "format must be 1"),
             ("preset: 3\n", "preset must be default or emacs"),
             ("- a\n", "the file must be a map"),
         ];

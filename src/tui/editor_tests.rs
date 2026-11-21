@@ -58,7 +58,7 @@ fn typing_inserts_and_saving_returns_the_text_with_one_newline() {
 }
 
 #[test]
-fn the_message_mode_keys_finish_and_cancel() {
+fn the_with_editor_keys_finish_and_cancel() {
     let mut ed = emacs("a\n");
     assert_eq!(press(&mut ed, "C-c C-c"), Outcome::Finish("a\n".into()));
     assert_eq!(press(&mut ed, "C-x #"), Outcome::Finish("a\n".into()));
@@ -95,6 +95,110 @@ fn a_deletion_before_the_mark_pulls_it_back() {
     assert_eq!(ed.text(), "cdef\n");
     press(&mut ed, "C-x C-x");
     assert_eq!(ed.cursor(), (0, 1));
+}
+
+#[test]
+fn undo_after_the_mark_leaves_the_mark() {
+    let mut ed = emacs("abcdefgh\n");
+    press(&mut ed, "C-e");
+    typed(&mut ed, "X");
+    press(&mut ed, "C-a C-f C-f C-f C-f C-SPC C-b C-b C-/");
+    assert_eq!(ed.text(), "abcdefgh\n");
+    assert_eq!(ed.cursor(), (0, 8), "undo moves point to the edit");
+    press(&mut ed, "C-w");
+    assert_eq!(ed.text(), "abcd\n", "the region is point (8) to mark (4)");
+}
+
+#[test]
+fn redo_after_the_mark_leaves_the_mark() {
+    let mut ed = emacs("abcdefgh\n");
+    press(&mut ed, "C-e");
+    typed(&mut ed, "X");
+    press(&mut ed, "C-/ C-a C-f C-f C-f C-f C-SPC C-g C-b C-b C-M-/");
+    assert_eq!(ed.text(), "abcdefghX\n");
+    press(&mut ed, "C-a C-f C-f C-w");
+    assert_eq!(ed.text(), "abefghX\n");
+}
+
+#[test]
+fn an_edit_that_ends_a_search_moves_the_mark_it_set() {
+    let mut ed = emacs("abc abc xyz\n");
+    press(&mut ed, "C-e C-b C-b C-b C-b C-r");
+    typed(&mut ed, "abc");
+    assert_eq!(ed.cursor(), (0, 4));
+    press(&mut ed, "C-d");
+    assert_eq!(ed.text(), "abc bc xyz\n");
+    press(&mut ed, "C-w");
+    assert_eq!(
+        ed.text(),
+        "abc  xyz\n",
+        "the mark followed the deletion to 6"
+    );
+}
+
+#[test]
+fn a_yank_sets_the_mark_at_its_start() {
+    let mut ed = emacs("ab cd\n");
+    press(&mut ed, "M-d C-SPC C-g C-e C-y C-w");
+    assert_eq!(ed.text(), " cd\n");
+}
+
+#[test]
+fn a_backward_deletion_before_the_mark_pulls_it_back() {
+    let mut ed = emacs("abcdef\n");
+    press(&mut ed, "C-f C-f C-f C-SPC C-g DEL C-x C-x");
+    assert_eq!(ed.cursor(), (0, 2));
+}
+
+#[test]
+fn text_inserted_at_the_mark_leaves_it() {
+    let mut ed = emacs("ab\n");
+    press(&mut ed, "C-f C-SPC C-g");
+    typed(&mut ed, "X");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 1));
+}
+
+#[test]
+fn a_deletion_around_the_mark_with_text_after_it() {
+    let mut ed = emacs("abcdef\nxy\n");
+    press(&mut ed, "C-f C-f C-SPC C-g C-a C-k C-x C-x");
+    assert_eq!(ed.cursor(), (0, 0));
+}
+
+#[test]
+fn set_mark_twice_leaves_no_region_for_del() {
+    let mut ed = emacs("abc\n");
+    press(&mut ed, "C-SPC C-SPC C-e DEL");
+    assert_eq!(ed.text(), "ab\n");
+}
+
+#[test]
+fn a_region_kill_with_point_first_prepends_to_the_last_kill() {
+    let mut ed = emacs("ab cd\n");
+    press(&mut ed, "C-f C-f C-f C-SPC C-g C-a M-d C-w C-y");
+    assert_eq!(ed.text(), " abcd\n");
+}
+
+#[test]
+fn a_rebound_keyboard_quit_answers_the_discard_question() {
+    let file = KeysFile::parse(
+        "preset: emacs\neditor:\n  C-]: keyboard-quit\n",
+        std::path::Path::new("keys.yml"),
+    )
+    .unwrap();
+    let mut ed = Editor::new("a\n", file.keymap(&SECTION).unwrap());
+    typed(&mut ed, "b");
+    press(&mut ed, "C-x k C-]");
+    assert_eq!(ed.echo().as_deref(), Some("Quit"));
+    assert!(ed.is_dirty());
+}
+
+#[test]
+fn a_prompt_closes_without_asking() {
+    let mut ed = Editor::single_line("", Keymap::preset(&SECTION, Preset::Default));
+    typed(&mut ed, "ab");
+    assert_eq!(press(&mut ed, "ESC"), Outcome::Cancel);
 }
 
 #[test]

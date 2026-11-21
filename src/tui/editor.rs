@@ -29,7 +29,9 @@ use ratatui_widgets::block::Block;
 use super::keymap::{Command, Keymap, Lookup, Section};
 use super::kill_ring::{Direction, KillRing};
 
-/// What the editor's keys can do. The names are Emacs's command names.
+/// What the editor's keys can do. The names are Emacs's command names,
+/// except `backward-kill-line`, which Emacs has only as `C-0 C-k`, and
+/// `with-editor-finish`, from the with-editor package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditAction {
     ForwardChar,
@@ -419,11 +421,13 @@ fn lines_of(text: &str) -> Vec<String> {
 
 /// A position as a character offset into the lines joined by `\n`.
 fn offset(lines: &[String], (row, col): Pos) -> usize {
+    let row = row.min(lines.len().saturating_sub(1));
+    let width = lines.get(row).map_or(0, |l| l.chars().count());
     lines[..row]
         .iter()
         .map(|l| l.chars().count() + 1)
         .sum::<usize>()
-        + col
+        + col.min(width)
 }
 
 fn joined(lines: &[String]) -> String {
@@ -448,26 +452,38 @@ fn position(lines: &[String], mut at: usize) -> Pos {
     (last, lines.get(last).map_or(0, |l| l.chars().count()))
 }
 
-/// Where a mark at `mark` goes after an edit at `start` changed the
-/// text's length by `delta`, as an Emacs marker moves: text inserted
-/// before it pushes it on, text inserted at it leaves it, and a
-/// deletion around it pulls it to the deletion's start.
-fn shift_mark(mark: usize, start: usize, delta: isize) -> usize {
-    if delta >= 0 {
-        if start < mark {
-            mark + delta.unsigned_abs()
-        } else {
-            mark
-        }
+/// The span one command changed: where it starts, how many characters
+/// it removed, and how many it inserted. Found by comparing the text
+/// before and after, so it is where the edit happened whatever the
+/// command did with point (undo and redo move point to the edit).
+fn edit_span(before: &[char], after: &[char]) -> (usize, usize, usize) {
+    let prefix = before.iter().zip(after).take_while(|(a, b)| a == b).count();
+    let room = before.len().min(after.len()) - prefix;
+    let suffix = before
+        .iter()
+        .rev()
+        .zip(after.iter().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    (
+        prefix,
+        before.len() - prefix - suffix,
+        after.len() - prefix - suffix,
+    )
+}
+
+/// Where a mark goes across an edit, as an Emacs marker moves: an edit
+/// wholly before it shifts it by the change in length, an edit at or
+/// after it leaves it, and an edit around it pulls it to the edit's
+/// start.
+fn shift_mark(mark: usize, (start, removed, inserted): (usize, usize, usize)) -> usize {
+    if mark <= start {
+        mark
+    } else if mark >= start + removed {
+        mark - removed + inserted
     } else {
-        let removed = delta.unsigned_abs();
-        if mark >= start + removed {
-            mark - removed
-        } else if mark > start {
-            start
-        } else {
-            mark
-        }
+        start
     }
 }
 
@@ -486,7 +502,8 @@ impl Editor {
         Self::build(text, keymap, false)
     }
 
-    /// A one-line editor for a prompt: `RET` saves, and a yank of
+    /// A one-line editor for a prompt: `RET` finishes
+    /// ([`Outcome::Finish`]), closing never asks, and a yank of
     /// several lines inserts them joined by spaces.
     #[must_use]
     pub fn single_line(text: &str, keymap: Keymap<EditAction>) -> Self {
@@ -597,12 +614,7 @@ impl Editor {
 
     /// Handle one key press.
     pub fn handle(&mut self, event: &KeyEvent) -> Outcome {
-        let lines = self.textarea.lines();
-        let len_before = joined(lines).chars().count();
-        let cursor_before = offset(lines, self.cursor());
-        let mark_before = self.mark;
-        let mark_offset = mark_before.map(|m| offset(lines, m));
-        let outcome = match self.mode {
+        match self.mode {
             Mode::ConfirmDiscard => self.confirm(event),
             Mode::Search(_) => self.search_key(event),
             Mode::Edit => {
@@ -612,22 +624,29 @@ impl Editor {
                 }
                 self.dispatch(lookup)
             }
-        };
-        // Keep the mark on the same text across an edit, unless the
-        // command set the mark itself.
+        }
+    }
+
+    /// Run one command, and keep the mark on the same text across
+    /// whatever it changed, unless the command set the mark itself.
+    fn dispatch(&mut self, lookup: Lookup<EditAction>) -> Outcome {
+        let lines = self.textarea.lines();
+        let before: Vec<char> = joined(lines).chars().collect();
+        let mark_before = self.mark;
+        let mark_offset = mark_before.map(|m| offset(lines, m));
+        let outcome = self.command(lookup);
         if let (Some(mark), true) = (mark_offset, self.mark == mark_before) {
             let lines = self.textarea.lines();
-            let len_after = joined(lines).chars().count();
-            if len_after != len_before {
-                let start = cursor_before.min(offset(lines, self.cursor()));
-                let delta = len_after as isize - len_before as isize;
-                self.mark = Some(position(lines, shift_mark(mark, start, delta)));
+            let after: Vec<char> = joined(lines).chars().collect();
+            if after != before {
+                let span = edit_span(&before, &after);
+                self.mark = Some(position(lines, shift_mark(mark, span)));
             }
         }
         outcome
     }
 
-    fn dispatch(&mut self, lookup: Lookup<EditAction>) -> Outcome {
+    fn command(&mut self, lookup: Lookup<EditAction>) -> Outcome {
         match lookup {
             Lookup::Ignored | Lookup::Pending => Outcome::Continue,
             Lookup::Cancelled => {
@@ -931,7 +950,9 @@ impl Editor {
             E::Save => return Outcome::Save(self.text()),
             E::Finish => return Outcome::Finish(self.text()),
             E::Cancel => {
-                if self.is_dirty() {
+                // A prompt draws no echo line to ask on, and closes
+                // without asking, as Emacs's minibuffer does on C-g.
+                if self.is_dirty() && !self.single_line {
                     self.mode = Mode::ConfirmDiscard;
                 } else {
                     return Outcome::Cancel;
