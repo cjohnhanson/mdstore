@@ -1,0 +1,7 @@
+signoff[review-tests] PASS 3b1ee70 e1d0bb1 and 3b1ee70 share tree 06c930b36767, the diff is empty, and 3b1ee70's only parent is 891553d, so the e1d0bb1 review (tag check, --locked mutation) applies unchanged
+signoff[review-docs] PASS 3b1ee70 trees of e1d0bb1 and 3b1ee70 are both 06c930b36767, the diff is empty, and the squash message carries the reviewed body word for word with no trailer
+signoff[review-code] PASS 3b1ee70 trees of e1d0bb1 and 3b1ee70 are identical (06c930b), the diff is empty, and 3b1ee70 is origin/main with parent 891553d
+signoff[review-deps] PASS 3b1ee70 merged Cargo.toml and Cargo.lock are byte-identical to the audited e1d0bb1 (same tree 06c930b36767, empty diff), cargo-audit 0 vulnerabilities
+signoff[review-usability] PASS 3b1ee70 e1d0bb1 and 3b1ee70 both have tree 06c930b36767, the diff is empty, and 3b1ee70's parent is 891553d, so the e1d0bb1 usability review covers the merged commit
+
+PR #25 squash-merged the reviewed tip e1d0bb1 (signed in the note on e1d0bb1) as 3b1ee70.
