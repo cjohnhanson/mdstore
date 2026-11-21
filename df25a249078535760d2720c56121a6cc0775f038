@@ -1,0 +1,7 @@
+signoff[review-tests] PASS df25a24 not applicable: the diff only deletes six lines of AGENTS.md, and a search of every tracked test, fixture, script, workflow and include_str! found nothing that reads AGENTS.md or the removed text
+signoff[review-docs] PASS df25a24 swept AGENTS.md, CONTRIBUTING.md, README.md, SECURITY.md, vendored skills and script error text for leftover trailer instructions and found none; AGENTS.md ends cleanly with a newline; all 105 commits on origin/main carry no co-author trailer; minor: CONTRIBUTING.md keeps its pull request disclosure sentence
+signoff[review-code] PASS df25a24 not applicable: the change touches no source, only six lines of AGENTS.md prose, and git grep for co-authored, trailer and the removed address found no file depending on that text
+signoff[review-deps] PASS df25a24 not applicable: the commit touches only AGENTS.md with zero added lines, and Cargo.toml and Cargo.lock are unchanged, so no dependency, advisory, external program or install step changes
+signoff[review-usability] PASS df25a24 not applicable to the CLI, which the commit does not touch; checked the docs for contradictions and found none, and the last 10 commits on origin/main match the remaining guidance
+
+Preconditions: gitleaks over tree and history found no leaks; commit gate (fmt, clippy) passed; cargo test runs in the merge gate on push. One round, all five reviewers independent.
