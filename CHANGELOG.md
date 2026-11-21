@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.6.0
+## 0.6.1
+
+Version 0.6.0 never reached crates.io. In Cargo.toml, `version = "0.6"`
+resolves to 0.6.1.
 
 ### Added
 
@@ -18,10 +21,10 @@
 
 ### Security
 
-- mdstore-core 0.6.0 raises the cap-std minimum to 4.0.3 for
+- mdstore-core 0.6.1 raises the cap-std minimum to 4.0.3 for
   RUSTSEC-2026-0482. cap-std 4.0.2 could follow symlinks outside a
   confined store when the caller's path or symlink target ended in `/`.
-  This minimum applies when consumers upgrade to mdstore-core 0.6.0.
+  This minimum applies when consumers upgrade to mdstore-core 0.6.1.
   Consumers on 0.5.x can update cap-std with `cargo update -p cap-std`.
 
 ## 0.5.0
