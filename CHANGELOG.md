@@ -16,6 +16,12 @@
   through its own core operation. `Editor::single_line` provides a
   one-line prompt that acts as Emacs's minibuffer.
 
+### Security
+
+- cap-std's floor moves to 4.0.3. In 4.0.2 a path ending in `/` could
+  follow a symlink out of a confined store (RUSTSEC-2026-0482). A
+  consumer's lock that holds 4.0.2 moves off it on the next update.
+
 ## 0.5.0
 
 ### Changed

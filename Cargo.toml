@@ -61,7 +61,9 @@ yaml_serde = "0.10"
 thiserror = "2"
 url = "2"
 rand = "0.10.0"
-cap-std = "4.0.2"
+# 4.0.3: 4.0.2 let a path ending in "/" follow a symlink out of the
+# sandbox (RUSTSEC-2026-0482). The floor keeps a consumer's lock off it.
+cap-std = "4.0.3"
 
 # The passwd database, for the home directory that anchors the user
 # config path. $HOME is repo-settable (direnv, mise), and the user
