@@ -15,30 +15,28 @@
 //! refused. A caller cannot forget the check, because there is no
 //! check to forget.
 //!
-//! # Who refuses, and it is not always the kernel
+//! # Kernel and userspace confinement
 //!
-//! On Linux, cap-std tries `openat2` with `RESOLVE_BENEATH`. The kernel
-//! then refuses paths that escape the confined store. If `openat2`
-//! returns `ENOSYS`, cap-std uses its userspace resolver instead.
-//! Kernels before 5.6 lack `openat2`; a seccomp policy can also make
-//! it unavailable. On FreeBSD, the kernel refuses escapes when
-//! `O_RESOLVE_BENEATH` is available. Otherwise, cap-std uses the
-//! userspace resolver. Windows and macOS also use that resolver.
+//! cap-std uses kernel confinement when possible: `openat2` with
+//! `RESOLVE_BENEATH` on Linux and `O_RESOLVE_BENEATH` on FreeBSD.
+//! Whenever cap-std cannot use kernel confinement, it uses a userspace
+//! resolver. Any platform can use this resolver.
 //!
-//! The userspace resolver opens one component at a time and follows
-//! each symlink itself. It refuses a component that leaves the
-//! confined store. A defect in cap-std/cap-primitives 4.0.2 let a name
-//! ending in `/` follow a link out (RUSTSEC-2026-0482). This crate
-//! requires cap-std 4.0.3, which fixes that defect.
+//! The userspace resolver opens one component at a time, follows each
+//! symlink itself, and refuses components that leave the confined store.
+//! The walk is not atomic. Directory renames between steps create a race
+//! that kernel confinement avoids. cap-std's `racy_asserts` build flag
+//! controls its race checks.
 //!
-//! The userspace walk is not atomic. A process can rename a directory
-//! between two steps, creating a race the kernel form does not have.
-//! cap-std's race checks sit behind a `racy_asserts` build flag.
+//! In cap-std/cap-primitives 4.0.2, the userspace resolver could follow
+//! links outside the confined store when a path or symlink target ended
+//! in `/` (RUSTSEC-2026-0482). This crate requires cap-std 4.0.3, which
+//! fixes the defect.
 //!
-//! This module answers untrusted text in a path on every platform.
-//! It does not answer a hostile process racing the walk from inside
-//! the confined store directory. That gap is real wherever the
-//! userspace resolver runs.
+//! This module handles untrusted path text on every platform.
+//! It does not protect against a hostile process racing the walk from
+//! inside the confined store directory. This gap can occur on any
+//! platform.
 //!
 //! # What this does not cover
 //!
@@ -612,18 +610,19 @@ mod tests {
 
     /// On macOS with cap-std 4.0.2, `scan` and `subdirectories` escaped
     /// the confined store through `escape/` and `escape2/`
-    /// (RUSTSEC-2026-0482). The `escape2` target ends in `/`.
-    /// Only names ending in `/` escaped through these methods.
-    /// Names without that slash and `read` calls through either link
-    /// already failed; those assertions preserve existing behavior.
+    /// (RUSTSEC-2026-0482). The links target `../outside` and
+    /// `../outside/`, respectively.
+    /// cap-std 4.0.2 already refused names without the trailing slash
+    /// and `read` calls through either link. Those assertions preserve
+    /// behavior that was already safe.
     ///
-    /// This Unix-only test fails on 4.0.2 with the userspace resolver:
-    /// macOS, Linux without `openat2`, and FreeBSD without
-    /// `O_RESOLVE_BENEATH`.
-    /// On Linux with `openat2`, the kernel refuses these names with
-    /// any cap-std version, so this test cannot detect the resolver
-    /// defect. `tests/dependency_floor.rs` checks the dependency
-    /// minimum on every platform.
+    /// This Unix-only test detects the defect only when the userspace
+    /// resolver runs, as measured on macOS.
+    /// When the kernel refuses these paths, the test passes with any
+    /// cap-std version. A Linux CI run that uses kernel confinement
+    /// therefore cannot detect this resolver regression.
+    /// `tests/dependency_floor.rs` checks the cap-std dependency floor
+    /// on every platform.
     #[cfg(unix)]
     #[test]
     fn a_trailing_slash_does_not_follow_a_link_out() {
