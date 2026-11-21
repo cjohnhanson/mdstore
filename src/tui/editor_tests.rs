@@ -132,6 +132,17 @@ fn undo_restoring_several_characters_in_a_run_pushes_the_mark_on() {
 }
 
 #[test]
+fn undo_removing_an_insertion_in_a_run_leaves_a_mark_at_its_start() {
+    let mut ed = emacs("xaaaa\n");
+    press(&mut ed, "C-a C-f C-f");
+    typed(&mut ed, "a");
+    press(&mut ed, "C-b C-SPC C-g C-e C-/");
+    assert_eq!(ed.text(), "xaaaa\n");
+    press(&mut ed, "C-x C-x");
+    assert_eq!(ed.cursor(), (0, 2));
+}
+
+#[test]
 fn undo_of_a_blank_line_kill_pushes_the_mark_on() {
     let mut ed = emacs("a\n\n\n\nb\n");
     press(&mut ed, "C-n C-n C-n C-SPC C-g M-< C-n C-k");
