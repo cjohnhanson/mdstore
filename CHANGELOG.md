@@ -18,9 +18,11 @@
 
 ### Security
 
-- cap-std's floor moves to 4.0.3. In 4.0.2 a path ending in `/` could
-  follow a symlink out of a confined store (RUSTSEC-2026-0482). A
-  consumer's lock that holds 4.0.2 moves off it on the next update.
+- mdstore-core 0.6.0 raises the cap-std minimum to 4.0.3 for
+  RUSTSEC-2026-0482. cap-std 4.0.2 could follow symlinks outside a
+  confined store when the caller's path or symlink target ended in `/`.
+  This minimum applies when consumers upgrade to mdstore-core 0.6.0.
+  Consumers on 0.5.x can update cap-std with `cargo update -p cap-std`.
 
 ## 0.5.0
 

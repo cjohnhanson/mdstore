@@ -604,13 +604,20 @@ mod tests {
         );
     }
 
-    /// RUSTSEC-2026-0482: a name ending in `/`, or a link whose target
-    /// ends in `/`, followed the link out of the store in cap-std
-    /// 4.0.2. The userspace resolver that had the defect runs on macOS
-    /// and the other platforms without a kernel `RESOLVE_BENEATH`, so
-    /// this goes red there on 4.0.2. On Linux openat2 refuses these
-    /// names whatever the cap-std version, so there it pins the
-    /// behaviour and cannot catch a regression.
+    /// On macOS with cap-std 4.0.2, `scan` and `subdirectories` escaped
+    /// the confined store through `escape/` and `escape2/`
+    /// (RUSTSEC-2026-0482). The `escape2` target ends in `/`.
+    /// Only names ending in `/` escaped through these methods.
+    /// Names without that slash and `read` calls through either link
+    /// already failed; those assertions preserve existing behavior.
+    ///
+    /// This Unix-only test fails on 4.0.2 with the userspace resolver:
+    /// macOS, Linux without `openat2`, and FreeBSD without
+    /// `O_RESOLVE_BENEATH`.
+    /// On Linux with `openat2`, the kernel refuses these names with
+    /// any cap-std version, so this test cannot detect the resolver
+    /// defect. `tests/dependency_floor.rs` checks the dependency
+    /// minimum on every platform.
     #[cfg(unix)]
     #[test]
     fn a_trailing_slash_does_not_follow_a_link_out() {

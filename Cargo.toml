@@ -61,8 +61,8 @@ yaml_serde = "0.10"
 thiserror = "2"
 url = "2"
 rand = "0.10.0"
-# 4.0.3: 4.0.2 let a path ending in "/" follow a symlink out of the
-# sandbox (RUSTSEC-2026-0482). The floor keeps a consumer's lock off it.
+# cap-std 4.0.3 requires cap-primitives ^4.0.3, which fixes
+# RUSTSEC-2026-0482 (symlink escape from a confined store).
 cap-std = "4.0.3"
 
 # The passwd database, for the home directory that anchors the user
